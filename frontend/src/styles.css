@@ -6,7 +6,7 @@
 }
 * { box-sizing: border-box; }
 html, body, #root { min-height: 100dvh; }
-body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.45 -apple-system, system-ui, 'Segoe UI', sans-serif; -webkit-text-size-adjust: 100%; overscroll-behavior: none; font-variant-numeric: tabular-nums; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.45 'Manrope', -apple-system, system-ui, 'Segoe UI', sans-serif; -webkit-text-size-adjust: 100%; overscroll-behavior: none; font-variant-numeric: tabular-nums; }
 ::selection { background: color-mix(in srgb, var(--accent) 45%, transparent); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 button { font: inherit; color: inherit; -webkit-tap-highlight-color: transparent; }
@@ -35,7 +35,7 @@ h2 { margin: 0 0 8px; font-size: 1.05rem; font-weight: 600; }
 .pill-arc { fill: none; stroke-width: 28; stroke-linecap: round; }
 .ring-empty { fill: none; stroke: var(--surface); stroke-width: 28; }
 .ring-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 0 22%; }
-.hero { font-size: 3.4rem; font-weight: 700; letter-spacing: -0.03em; line-height: 1; }
+.hero { font-size: 3.4rem; font-weight: 800; letter-spacing: -0.03em; line-height: 1; }
 .hero-sub { margin-top: 6px; color: var(--muted); font-size: 0.9rem; text-wrap: balance; }
 
 /* Legend */
