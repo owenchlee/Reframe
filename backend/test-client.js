@@ -56,6 +56,7 @@ function runSession({ pcm, me = [], url = 'ws://localhost:3001/live', play = fal
     const events = [];
     const ws = new WebSocket(url);
     let audio = null; // { bytes, player }
+    let player = null; // ffplay for the latest whisper; keeps playing after audio_end
 
     ws.on('open', () => {
       t0 = performance.now();
@@ -103,9 +104,20 @@ function runSession({ pcm, me = [], url = 'ws://localhost:3001/live', play = fal
         case 'audio_start':
           audio = { bytes: 0, player: null };
           if (play) {
-            audio.player = spawn('ffplay', ['-v', 'error', '-nodisp', '-autoexit', '-i', 'pipe:0'], { stdio: ['pipe', 'ignore', 'inherit'] });
-            audio.player.stdin.on('error', () => {});
+            if (player) player.kill();
+            player = spawn('ffplay', ['-v', 'error', '-nodisp', '-autoexit', '-i', 'pipe:0'], { stdio: ['pipe', 'ignore', 'inherit'] });
+            player.stdin.on('error', () => {});
+            audio.player = player;
           }
+          break;
+        case 'audio_stop':
+          // Stale whisper: stop playback now and drop anything still queued for it.
+          log(`${stamp()} audio_stop (after ${audio ? audio.bytes : 'all'} bytes) - playback stopped`);
+          if (player) {
+            player.kill();
+            player = null;
+          }
+          audio = null;
           break;
         case 'audio_end':
           if (audio) {

@@ -21,6 +21,7 @@ when they're not interested.
   `httpClient.js` (keep-alive pool), `test-client.js`, `make-test-clip.js`, `bench.js` (latency),
   `test/` (engine tests: `npm run test:engine`).
 - `frontend/`: React (owned by the frontend dev; tooling TBD, document here once chosen).
+  On `audio_stop` the client must stop playback immediately and drop any queued mp3 chunks.
 - Live transcription: Deepgram Nova-3 live streaming speech-to-text.
 - Suggestion LLM: Groq (OpenAI-compatible chat completions, fast small instruct model).
 - Voice out: ElevenLabs TTS, lowest-latency model, streamed mp3.
@@ -38,6 +39,9 @@ Server → client:
 - `{type:"suggestion", text, mode:"ask"|"reply"|"exit", latencyMs}`
 - `{type:"audio_start"}`, then binary mp3 chunks, then `{type:"audio_end"}`
 - `{type:"timing", latencyMs, ttsMs}`
+- `{type:"audio_stop"}`: the whisper being played is stale (they resumed talking, or the user
+  pressed the talk key). Stop playback now, discard its queued chunks. Terminal for that suggestion:
+  no further audio_end/timing. May also arrive after audio_end while the whisper is still playing.
 
 Latency target: end of the other person's turn → suggestion text ready in **under 1.5s**. The UI shows
 the measured latency on screen. Keep this section updated whenever a message shape changes.
@@ -84,6 +88,7 @@ latencyMs p50 965 / worst 1679, ttsMs p50 193 / worst 1146 (15 of 16 turns withi
 - [x] Groq suggestions
 - [x] TTS streaming
 - [x] Test client
+- [x] Protocol change (2026-11-01): added `audio_stop` (server -> client); frontend must handle it
 - [ ] Frontend mic capture (laptop mic, 16kHz PCM)
 - [ ] Frontend earbud playback (`setSinkId`)
 - [ ] UI: engagement meter + latency number

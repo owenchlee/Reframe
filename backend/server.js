@@ -9,12 +9,13 @@ const { WebSocketServer } = require('ws');
 const { DeepgramStream, SAMPLE_RATE } = require('./deepgram');
 const { SignalEngine } = require('./signalEngine');
 const { writeSuggestion, warmGroq } = require('./suggest');
-const { streamSpeech, warmTts } = require('./tts');
+const { streamSpeech, warmTts, MP3_BYTES_PER_SEC } = require('./tts');
 
 const PORT = 3001;
 const BYTES_PER_SEC = SAMPLE_RATE * 2; // 16-bit mono PCM
 const CONTEXT_TURNS = 6; // turns sent to Groq
 const WARM_EVERY_MS = 1000; // check often; httpClient only warms a host after it has been idle ~4s
+const PLAYBACK_SLACK_MS = 300; // added to the estimated whisper length before it counts as finished
 const WALL_LOG_SECS = 120; // how much audio-time -> wall-time mapping to keep (numbers only)
 
 const { DEEPGRAM_API_KEY, ELEVENLABS_API_KEY, GROQ_API_KEY, ELEVENLABS_VOICE_ID } = process.env;
@@ -37,7 +38,9 @@ class LiveSession {
     this.carry = null; // odd trailing byte from a frame, kept to stay sample-aligned
     this.speakers = [{ at: 0, who: 'them' }]; // speaker timeline (audio seconds)
     this.wallLog = []; // [{ endSec, wall }] to convert audio time to wall-clock time
-    this.inflight = null; // AbortController for the current suggestion + TTS
+    // The current suggestion: { ctrl, turnEnd, audioStarted, audioEnded, firstChunkAt, bytes, stopped }.
+    // Kept after audio_end until its estimated playback end, so a stale whisper can still be stopped.
+    this.current = null;
 
     // Open TLS connections to Groq and ElevenLabs now, not on the first suggestion.
     const warmAll = () => { warmGroq(GROQ_API_KEY); warmTts(ELEVENLABS_API_KEY); };
@@ -50,8 +53,9 @@ class LiveSession {
       // any audio still streaming) so nothing stale is whispered; their next end-of-turn re-triggers.
       // Judged by word timestamps, not arrival time, so a late interim of the user's own words
       // can't cancel a whisper.
-      if (this.inflight && words.some((w) => w.start > this.inflightTurnEnd && this.speakerAt(w.start) === 'them')) {
-        this.cancelInflight();
+      const cur = this.current;
+      if (cur && words.some((w) => w.start > cur.turnEnd && this.speakerAt(w.start) === 'them')) {
+        this.cancelCurrent();
       }
       this.send({ type: 'transcript', who: this.currentSpeaker(), text, final: false });
     });
@@ -118,6 +122,8 @@ class LiveSession {
     if (msg.type === 'speaker' && (msg.who === 'me' || msg.who === 'them') && msg.who !== this.currentSpeaker()) {
       this.speakers.push({ at: this.audioSec, who: msg.who });
       if (this.speakers.length > 500) this.speakers.splice(1, 1);
+      // The user started talking: stop any whisper and drop a suggestion still being written.
+      if (msg.who === 'me') this.cancelCurrent();
     }
   }
 
@@ -162,10 +168,10 @@ class LiveSession {
     const mode = this.engine.mode(state, talkRatio);
 
     // A newer turn supersedes any suggestion still being written or spoken.
-    if (this.inflight) this.inflight.abort();
+    this.cancelCurrent();
     const ctrl = new AbortController();
-    this.inflight = ctrl;
-    this.inflightTurnEnd = endSec;
+    const cur = { ctrl, turnEnd: endSec, audioStarted: false, audioEnded: false, firstChunkAt: null, bytes: 0, stopped: false };
+    this.current = cur;
 
     let text;
     try {
@@ -184,32 +190,52 @@ class LiveSession {
     const ttsStart = Date.now();
     let ttsMs = null;
     this.send({ type: 'audio_start' });
+    cur.audioStarted = true;
     try {
       for await (const chunk of streamSpeech({ apiKey: ELEVENLABS_API_KEY, voiceId: ELEVENLABS_VOICE_ID, text, signal: ctrl.signal })) {
-        if (ctrl.signal.aborted) break;
+        // Checked right before every send: once audio_stop went out, no chunk can follow it.
+        if (cur.stopped || ctrl.signal.aborted) break;
         if (ttsMs === null) ttsMs = Date.now() - ttsStart;
+        if (cur.firstChunkAt === null) cur.firstChunkAt = Date.now();
+        cur.bytes += chunk.length;
         this.sendBinary(chunk);
       }
     } catch (err) {
       if (!ctrl.signal.aborted) console.error(`[tts] ${err.message}`);
     }
+    if (cur.stopped) return; // audio_stop is terminal: no audio_end, no timing
     this.send({ type: 'audio_end' });
+    cur.audioEnded = true;
     if (!ctrl.signal.aborted && ttsMs !== null) this.send({ type: 'timing', latencyMs, ttsMs });
-    if (this.inflight === ctrl) this.inflight = null;
+    if (ctrl.signal.aborted && this.current === cur) this.current = null;
   }
 
-  cancelInflight() {
-    if (this.inflight) {
-      this.inflight.abort();
-      this.inflight = null;
+  // Estimated wall time when the client finishes playing the current whisper.
+  playbackEndsAt(cur) {
+    if (cur.firstChunkAt === null) return 0;
+    return cur.firstChunkAt + (cur.bytes / MP3_BYTES_PER_SEC) * 1000 + PLAYBACK_SLACK_MS;
+  }
+
+  // Cancel the current suggestion. If its whisper has started and may still be playing (audio
+  // still streaming, or within its estimated playback time), tell the client with audio_stop.
+  // If nothing was sent yet (still in Groq / before audio_start), cancel silently.
+  cancelCurrent() {
+    const cur = this.current;
+    if (!cur) return;
+    this.current = null;
+    const playing = cur.audioStarted && !cur.stopped && (!cur.audioEnded || Date.now() < this.playbackEndsAt(cur));
+    if (playing) {
+      cur.stopped = true; // set before anything else so the TTS loop sends no further chunks
+      this.send({ type: 'audio_stop' });
     }
+    cur.ctrl.abort();
   }
 
   close() {
     if (this.closed) return;
     this.closed = true;
     clearInterval(this.warmTimer);
-    if (this.inflight) this.inflight.abort();
+    if (this.current) this.current.ctrl.abort();
     this.stt.close();
   }
 }

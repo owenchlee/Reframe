@@ -7,6 +7,8 @@ const { request, warm } = require('./httpClient');
 const TTS_MODEL = 'eleven_flash_v2_5';
 // Smallest mp3 format offered: fine for a whisper in earbuds and fewer bytes to stream.
 const OUTPUT_FORMAT = 'mp3_22050_32';
+// Playback rate of OUTPUT_FORMAT (32 kbps): used to estimate how long a whisper plays.
+const MP3_BYTES_PER_SEC = 32000 / 8;
 // Default premade voice; override with ELEVENLABS_VOICE_ID in backend/.env.
 const DEFAULT_VOICE_ID = 'JBFqnCBsd6RMkjVDRZzb';
 
@@ -33,4 +35,4 @@ function warmTts(apiKey) {
   return warm('https://api.elevenlabs.io/v1/models', { 'xi-api-key': apiKey });
 }
 
-module.exports = { streamSpeech, warmTts, TTS_MODEL };
+module.exports = { streamSpeech, warmTts, TTS_MODEL, MP3_BYTES_PER_SEC };
