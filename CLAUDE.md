@@ -18,7 +18,8 @@ when they're not interested.
 ## Stack
 - `backend/`: Node + Express (CommonJS), `ws` (WebSocket), dotenv. Port 3001. (multer removed.)
   Files: `server.js`, `deepgram.js` (STT), `signalEngine.js`, `suggest.js` (Groq), `tts.js`,
-  `test-client.js`, `make-test-clip.js`, `test/` (engine tests: `npm run test:engine`).
+  `httpClient.js` (keep-alive pool), `test-client.js`, `make-test-clip.js`, `bench.js` (latency),
+  `test/` (engine tests: `npm run test:engine`).
 - `frontend/`: React (owned by the frontend dev; tooling TBD, document here once chosen).
 - Live transcription: Deepgram Nova-3 live streaming speech-to-text.
 - Suggestion LLM: Groq (OpenAI-compatible chat completions, fast small instruct model).
@@ -73,8 +74,9 @@ suggestion, the latency number, and the exit line when the friend plays someone 
 - Frontend: TBD once set up.
 
 ## Status
-Backend verified end to end with real keys on `test-clip.mp3` (2026-11-01): suggestion latency
-0.9s and 1.8s per turn. `frontend/` is empty.
+Backend verified end to end with real keys. `node bench.js 8` on `test-clip.mp3` (2026-11-01):
+latencyMs p50 965 / worst 1679, ttsMs p50 193 / worst 1146 (15 of 16 turns within both targets).
+`frontend/` is empty.
 
 - [x] WebSocket server (`/live` on port 3001)
 - [x] Deepgram Nova-3 live streaming

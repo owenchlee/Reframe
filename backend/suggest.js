@@ -4,6 +4,8 @@
 // Fastest usable model on this key (~400-600ms in testing) with reasoning turned off via REASONING_EFFORT.
 const GROQ_MODEL = 'qwen/qwen3.8-27b';
 const REASONING_EFFORT = 'none';
+const { request, readBody, warm } = require('./httpClient');
+
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const TIMEOUT_MS = 5000;
 const MAX_TOKENS = 40;
@@ -27,38 +29,78 @@ function cleanLine(text) {
   return words.slice(0, MAX_WORDS).join(' ');
 }
 
+// Groq's response time varies a lot (measured 130-1150ms on a warm socket). If the first request
+// hasn't answered after HEDGE_AFTER_MS, send an identical second one and take whichever finishes
+// first. Costs at most one extra short completion per turn.
+const HEDGE_AFTER_MS = 450;
+
 async function writeSuggestion({ apiKey, turns, state, mode, signal }) {
-  const transcript = turns.map((t) => `${t.who === 'me' ? 'Me' : 'Them'}: ${t.text}`).join('\n');
-  const timeout = AbortSignal.timeout(TIMEOUT_MS);
-  let res;
+  const ctrls = [new AbortController(), new AbortController()];
+  const abortAll = () => ctrls.forEach((c) => c.abort());
+  if (signal) signal.addEventListener('abort', abortAll, { once: true });
+  const attempt = (i) => requestLine({ apiKey, turns, state, mode, signal: ctrls[i].signal });
   try {
-    res = await fetch(GROQ_URL, {
-      method: 'POST',
-      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: GROQ_MODEL,
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: `Conversation so far:\n${transcript}\n\nEngagement: ${state}\nMode: ${mode}\nYour one line:` },
-        ],
-        temperature: 0.4,
-        reasoning_effort: REASONING_EFFORT,
-        max_tokens: MAX_TOKENS,
-        stream: false,
-      }),
+    const first = attempt(0);
+    // The hedge only fires if the first request is still pending; it settles (rejects) on abort
+    // or if the first request fails outright, so Promise.any never hangs.
+    const hedge = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => attempt(1).then(resolve, reject), HEDGE_AFTER_MS);
+      first.then(() => clearTimeout(timer), (err) => { clearTimeout(timer); reject(err); });
+      ctrls[1].signal.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('aborted')); }, { once: true });
     });
+    // First success wins; fail only if both fail (or the caller aborted).
+    const line = await Promise.any([first, hedge]);
+    return line;
+  } catch (err) {
+    if (signal && signal.aborted) throw signal.reason || err;
+    const reasons = err.errors || [err];
+    throw reasons.find((e) => e && !/aborted/i.test(e.message)) || reasons[0];
+  } finally {
+    abortAll();
+    if (signal) signal.removeEventListener('abort', abortAll);
+  }
+}
+
+async function requestLine({ apiKey, turns, state, mode, signal }) {
+  const transcript = turns.map((t) => `${t.who === 'me' ? 'Me' : 'Them'}: ${t.text}`).join('\n');
+  const body = JSON.stringify({
+    model: GROQ_MODEL,
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: `Conversation so far:\n${transcript}\n\nEngagement: ${state}\nMode: ${mode}\nYour one line:` },
+    ],
+    temperature: 0.4,
+    reasoning_effort: REASONING_EFFORT,
+    max_tokens: MAX_TOKENS,
+    stream: false,
+  });
+  let res;
+  let text;
+  try {
+    res = await request(GROQ_URL, {
+      method: 'POST',
+      signal,
+      timeoutMs: TIMEOUT_MS,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}`, 'Content-Length': Buffer.byteLength(body) },
+      body,
+    });
+    text = await readBody(res);
   } catch (err) {
     // Error messages here carry no request content; keep them generic anyway.
-    if (timeout.aborted) throw new Error(`Groq timeout after ${TIMEOUT_MS}ms`);
+    if (err.code === 'TIMEOUT') throw new Error(`Groq timeout after ${TIMEOUT_MS}ms`);
     if (signal && signal.aborted) throw err;
     throw new Error('Groq network error');
   }
-  if (!res.ok) throw new Error(`Groq HTTP ${res.status}`);
-  const data = await res.json();
+  if (res.statusCode !== 200) throw new Error(`Groq HTTP ${res.statusCode}`);
+  const data = JSON.parse(text);
   const line = cleanLine(data.choices?.[0]?.message?.content);
   if (!line) throw new Error('Groq returned no text');
   return line;
 }
 
-module.exports = { writeSuggestion, cleanLine, GROQ_MODEL };
+// Opens/keeps a pooled TLS connection to Groq so the next suggestion skips the handshake.
+function warmGroq(apiKey) {
+  return warm('https://api.groq.com/openai/v1/models', { Authorization: `Bearer ${apiKey}` }, 2);
+}
+
+module.exports = { writeSuggestion, warmGroq, cleanLine, GROQ_MODEL };

@@ -3,14 +3,17 @@
 // JSON Results / UtteranceEnd out. Word start/end are seconds from the start of this stream.
 // Never logs audio or transcript text.
 //
-// Events: 'ready', 'partial'(text), 'committed'(text, words[{text,start,end}]),
+// Events: 'ready', 'partial'(text, words[{start,end}]), 'committed'(text, words[{text,start,end}]),
 //         'endOfTurn'(lastWordEndSec), 'upstreamError'(msg), 'warning'(msg), 'error'(err), 'close'(code)
 const { EventEmitter } = require('events');
 const WebSocket = require('ws');
 
 const SAMPLE_RATE = 16000;
 // Silence (ms) before Deepgram marks speech_final. This is the main end-of-turn latency knob.
-const ENDPOINTING_MS = 300;
+const ENDPOINTING_MS = 200;
+// A final chunk with at least this much silence after its last word also ends the turn
+// (Deepgram's endpointing sometimes doesn't set speech_final). Tuned on test-clip.mp3.
+const TRAILING_SILENCE_END_MS = 200;
 // Backup end-of-utterance signal when endpointing misses (noise). Deepgram recommends >= 1000.
 const UTTERANCE_END_MS = 1000;
 // Deepgram closes after 10s without audio; send KeepAlive if nothing was sent for this long.
@@ -82,7 +85,7 @@ class DeepgramStream extends EventEmitter {
       const alt = msg.channel?.alternatives?.[0];
       const text = alt?.transcript || '';
       if (!msg.is_final) {
-        if (text) this.emit('partial', text);
+        if (text) this.emit('partial', text, (alt.words || []).map((w) => ({ start: w.start, end: w.end })));
         return;
       }
       if (text) {
@@ -92,10 +95,10 @@ class DeepgramStream extends EventEmitter {
         this.emit('committed', text, words);
       }
       // End of turn: Deepgram's endpointing fired (speech_final), or this final chunk already
-      // contains >= ENDPOINTING_MS of silence after the last word (endpointing sometimes misses
+      // contains >= TRAILING_SILENCE_END_MS of silence after the last word (endpointing sometimes misses
       // this; without it we'd wait ~1s for UtteranceEnd).
       const trailingSilenceMs = (msg.start + msg.duration - this.lastWordEnd) * 1000;
-      if (msg.speech_final || (this.turnOpen && trailingSilenceMs >= ENDPOINTING_MS)) this._endTurn(this.lastWordEnd);
+      if (msg.speech_final || (this.turnOpen && trailingSilenceMs >= TRAILING_SILENCE_END_MS)) this._endTurn(this.lastWordEnd);
     } else if (msg.type === 'UtteranceEnd') {
       // Only fires the turn end if speech_final didn't already.
       this._endTurn(msg.last_word_end);

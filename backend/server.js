@@ -8,12 +8,13 @@ const cors = require('cors');
 const { WebSocketServer } = require('ws');
 const { DeepgramStream, SAMPLE_RATE } = require('./deepgram');
 const { SignalEngine } = require('./signalEngine');
-const { writeSuggestion } = require('./suggest');
-const { streamSpeech } = require('./tts');
+const { writeSuggestion, warmGroq } = require('./suggest');
+const { streamSpeech, warmTts } = require('./tts');
 
 const PORT = 3001;
 const BYTES_PER_SEC = SAMPLE_RATE * 2; // 16-bit mono PCM
 const CONTEXT_TURNS = 6; // turns sent to Groq
+const WARM_EVERY_MS = 1000; // check often; httpClient only warms a host after it has been idle ~4s
 const WALL_LOG_SECS = 120; // how much audio-time -> wall-time mapping to keep (numbers only)
 
 const { DEEPGRAM_API_KEY, ELEVENLABS_API_KEY, GROQ_API_KEY, ELEVENLABS_VOICE_ID } = process.env;
@@ -38,8 +39,22 @@ class LiveSession {
     this.wallLog = []; // [{ endSec, wall }] to convert audio time to wall-clock time
     this.inflight = null; // AbortController for the current suggestion + TTS
 
+    // Open TLS connections to Groq and ElevenLabs now, not on the first suggestion.
+    const warmAll = () => { warmGroq(GROQ_API_KEY); warmTts(ELEVENLABS_API_KEY); };
+    warmAll();
+    this.warmTimer = setInterval(warmAll, WARM_EVERY_MS);
+
     this.stt = new DeepgramStream(DEEPGRAM_API_KEY);
-    this.stt.on('partial', (text) => this.send({ type: 'transcript', who: this.currentSpeaker(), text, final: false }));
+    this.stt.on('partial', (text, words) => {
+      // The other person kept talking after the turn we're answering: drop that suggestion (and
+      // any audio still streaming) so nothing stale is whispered; their next end-of-turn re-triggers.
+      // Judged by word timestamps, not arrival time, so a late interim of the user's own words
+      // can't cancel a whisper.
+      if (this.inflight && words.some((w) => w.start > this.inflightTurnEnd && this.speakerAt(w.start) === 'them')) {
+        this.cancelInflight();
+      }
+      this.send({ type: 'transcript', who: this.currentSpeaker(), text, final: false });
+    });
     this.stt.on('committed', (text, words) => this.onCommitted(text, words));
     this.stt.on('endOfTurn', () => this.onEndOfTurn());
     this.stt.on('upstreamError', (msg) => console.error(`[deepgram] ${msg}`));
@@ -150,6 +165,7 @@ class LiveSession {
     if (this.inflight) this.inflight.abort();
     const ctrl = new AbortController();
     this.inflight = ctrl;
+    this.inflightTurnEnd = endSec;
 
     let text;
     try {
@@ -182,9 +198,17 @@ class LiveSession {
     if (this.inflight === ctrl) this.inflight = null;
   }
 
+  cancelInflight() {
+    if (this.inflight) {
+      this.inflight.abort();
+      this.inflight = null;
+    }
+  }
+
   close() {
     if (this.closed) return;
     this.closed = true;
+    clearInterval(this.warmTimer);
     if (this.inflight) this.inflight.abort();
     this.stt.close();
   }
