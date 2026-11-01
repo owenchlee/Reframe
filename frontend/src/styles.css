@@ -138,3 +138,29 @@ html, body { height: 100dvh; overflow: hidden; }
 .demo { flex: 1; min-height: 0; overflow: hidden; }
 .lines { flex: 1; min-height: 60px; max-height: none; }
 .privacy { flex: none; }
+
+/* Calibration, setup, live controls (added with server-side speaker labeling) */
+.calib { display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; padding: 24px 8px; margin: auto 0; }
+.calib-title { margin: 0; font-family: var(--serif); font-size: 1.8rem; line-height: 1.15; text-wrap: balance; }
+.calib-text { margin: 0; color: var(--muted); max-width: 32ch; text-wrap: balance; }
+.calib-count { margin: 0; color: var(--muted); font-size: .9rem; }
+.progress { width: min(320px, 80%); height: 6px; background: var(--chip); border-radius: 999px; overflow: hidden; }
+.progress span { display: block; height: 100%; background: var(--accent); box-shadow: 0 0 12px var(--accent); transition: width .2s linear; }
+.setup { flex: none; display: flex; flex-direction: column; gap: 10px; }
+.seg-control.persona button { min-height: 36px; font-size: .9rem; }
+.devices { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+.devices label { display: flex; flex-direction: column; gap: 4px; font-size: .78rem; color: var(--muted); min-width: 0; }
+.devices select { font: inherit; font-size: .9rem; color: var(--text); background: rgba(0,0,0,.6); border: 1px solid var(--line); border-radius: 999px; padding: 8px 12px; min-height: 40px; min-width: 0; text-overflow: ellipsis; }
+.devices .text-btn.small, .devices .warn { grid-column: 1 / -1; }
+.text-btn.small { min-height: 32px; font-size: .85rem; justify-self: start; }
+.warn { margin: 0; color: var(--accent-soft); font-size: .85rem; }
+.live-controls { display: flex; gap: 10px; align-items: stretch; }
+.hold.small { flex: 1; min-height: 48px; font-size: .9rem; font-weight: 500; color: var(--muted); }
+.hold.small.on { color: var(--on-accent); }
+.help-btn { flex: none; min-height: 48px; padding: 0 18px; border-radius: 999px; border: 1px solid var(--accent); background: transparent; color: var(--accent); font-weight: 600; cursor: pointer; }
+.say-text.handled { color: var(--muted); font-size: 1.2rem; }
+@media (max-width: 380px) { .devices { grid-template-columns: 1fr; } }
+.devices-wrap summary { cursor: pointer; color: var(--muted); font-size: .85rem; list-style: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 4px 2px; }
+.devices-wrap summary::-webkit-details-marker { display: none; }
+.devices-wrap summary b { color: var(--text); font-weight: 500; }
+.devices-wrap[open] summary { margin-bottom: 8px; }

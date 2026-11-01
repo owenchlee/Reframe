@@ -96,6 +96,8 @@ suggestion, the latency number, and the exit line when the friend plays someone 
   `ELEVENLABS_API_KEY` (TTS only), `GROQ_API_KEY` (suggestions), `PICOVOICE_ACCESS_KEY` (optional,
   voiceprint; not set, so voiceprint is off).
 - Before pushing: `git pull --rebase origin main`. Small, frequent commits.
+- Update 2026-11-01: one dev now owns both `backend/` and `frontend/` (the frontend dev is away).
+  Keep the protocol section in sync with both folders when anything changes.
 
 ## How to run
 - Backend: `cd backend && npm install && node server.js` (optional `ELEVENLABS_VOICE_ID` in `.env`)
@@ -103,6 +105,10 @@ suggestion, the latency number, and the exit line when the friend plays someone 
 - Optional env (not secrets): `REFRAME_STUCK_MS` (hold before whispering, default 1500; 0 = play at once,
   use 0 for bench.js and the older scenarios), `PORT` (default 3001).
 - Frontend: TBD once set up.
+- Frontend (2026-11-01): React + Vite. `cd frontend && npm install && npm run dev` -> https://localhost:5173
+  (self-signed cert; `/live` is proxied to `ws://localhost:3001`). `npm run build` for a production build.
+  No keys? `cd frontend && npm run mock` serves a scripted `/live` on port 3001 (stop the backend first).
+  `VITE_WS_URL` points the page at another backend; `NO_SSL=1` serves plain http.
 
 ## Status
 Backend verified end to end with real keys. `node bench.js 8` on `test-clip.mp3` (2026-11-01):
@@ -122,6 +128,10 @@ latencyMs p50 965 / worst 1679, ttsMs p50 193 / worst 1146 (15 of 16 turns withi
 - [x] Protocol change (2026-11-01): added `help`, `persona` (client -> server), `suggestion_dropped`,
   `persona_set` (server -> client), `heldMs` in timing; `suggestion` only on delivery
 - [x] Stuck detector (hold 1500ms, release / drop / help) and personas: `npm run scenario:stuck` passes
-- [ ] Frontend mic capture (laptop mic, 16kHz PCM)
-- [ ] Frontend earbud playback (`setSinkId`)
-- [ ] UI: engagement meter + latency number
+- [x] Frontend (2026-11-01): calibration step, persona picker, input/output device pickers with an
+  earbud-mic warning, optional talk override + hold space, help button, live transcript (interim/final),
+  engagement, delivered suggestion, timing (latency/tts/held), audio_start/end/stop, suggestion_dropped,
+  1011/close handling with restart without reload. Verified against the mock in headless Chrome.
+- [x] Frontend mic capture (laptop mic, 16kHz PCM): input picker defaults to a built-in mic
+- [ ] Frontend earbud playback (`setSinkId`): built, needs a manual test with real earbuds
+- [x] UI: engagement meter + latency number

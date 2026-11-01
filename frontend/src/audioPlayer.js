@@ -5,6 +5,7 @@ export function createPlayer() {
   let chunks = [];
   let sinkId = '';
   let gen = 0; // bumped by stop() so an in-flight end() can bail out
+  let active = false; // between audio_start and audio_end: only then are chunks accepted
 
   async function applySink() {
     if (sinkId && typeof el.setSinkId === 'function') {
@@ -29,11 +30,13 @@ export function createPlayer() {
     },
     begin() {
       chunks = [];
+      active = true;
     },
     push(buf) {
-      chunks.push(buf);
+      if (active) chunks.push(buf);
     },
     async end() {
+      active = false;
       if (!chunks.length) return;
       const url = URL.createObjectURL(new Blob(chunks, { type: 'audio/mpeg' }));
       chunks = [];
@@ -56,7 +59,11 @@ export function createPlayer() {
     stop() {
       gen++;
       chunks = [];
+      active = false;
       if (!el.paused) el.pause();
+    },
+    get sinkSupported() {
+      return typeof el.setSinkId === 'function';
     },
   };
 }

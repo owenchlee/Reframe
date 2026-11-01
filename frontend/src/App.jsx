@@ -1,5 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useLive } from './useLive.js';
+import { useLive, PERSONAS, CALIBRATE_MS } from './useLive.js';
+import {
+  canPickOutput, inputLooksLikeEarbuds, listDevices, loadDevicePref, pickInput, pickOutput, saveDevicePref, unlockLabels,
+} from './devices.js';
 import Ring from './Ring.jsx';
 import {
   STATES, avgTalkRatio, clearSessions, loadSessions, saveSessions, sumShares, takeaway, toPercents,
@@ -144,21 +147,115 @@ function Report({ sessions, range, setRange, onClear }) {
   );
 }
 
-function HoldToTalk({ speaker, onChange }) {
+// Optional override: the server labels who is talking; this (or holding space) forces "me".
+function TalkOverride({ speaker, onChange }) {
   const me = speaker === 'me';
   return (
     <button
-      className={`hold ${me ? 'on' : ''}`}
+      className={`hold small ${me ? 'on' : ''}`}
       aria-pressed={me}
       onClick={() => onChange(me ? 'them' : 'me')}
       onContextMenu={(e) => e.preventDefault()}
+      title="Optional: the coach detects who is talking. Hold space or tap to force it."
     >
-      {me ? 'You are talking · tap when done' : 'Tap when you start talking'}
+      {me ? 'Marked as you · tap to release' : "Mark: I'm talking (or hold space)"}
     </button>
   );
 }
 
+function Calibration({ live }) {
+  const { calib, status } = live;
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (status !== 'calibrating') return undefined;
+    const id = setInterval(() => tick((n) => n + 1), 200);
+    return () => clearInterval(id);
+  }, [status]);
+  if (status === 'calibrate_failed') {
+    return (
+      <section className="calib">
+        <p className="calib-title">Couldn't learn your voice</p>
+        <p className="calib-text">{calib.reason}</p>
+        <button className="primary start" onClick={live.calibrate}>Try again</button>
+        <button className="text-btn" onClick={live.skipCalibration}>Skip and hold space while I talk</button>
+      </section>
+    );
+  }
+  const elapsed = calib.startedAt ? Date.now() - calib.startedAt : 0;
+  const pct = Math.min(100, (elapsed / CALIBRATE_MS) * 100);
+  const left = Math.max(0, Math.ceil((CALIBRATE_MS - elapsed) / 1000));
+  return (
+    <section className="calib" aria-live="polite">
+      <p className="calib-title">{calib.waiting ? 'Checking your voice…' : 'Say a few sentences on your own'}</p>
+      <p className="calib-text">
+        {calib.waiting
+          ? 'One moment.'
+          : 'Just you talking, about anything, so the coach can tell your voice from theirs.'}
+      </p>
+      <div className="progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(pct)}>
+        <span style={{ width: `${pct}%` }} />
+      </div>
+      {!calib.waiting && <p className="calib-count">{left}s</p>}
+    </section>
+  );
+}
+
+function PersonaPicker({ value, onChange }) {
+  return (
+    <div className="seg-control persona" role="group" aria-label="Coach style">
+      {PERSONAS.map((p) => (
+        <button key={p.id} aria-pressed={value === p.id} className={value === p.id ? 'on' : ''} onClick={() => onChange(p.id)}>
+          {p.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function DevicePicker({ devices, inputId, outputId, setInputId, setOutputId, onUnlock }) {
+  const { inputs, outputs, labeled } = devices;
+  const warn = labeled && inputLooksLikeEarbuds(inputs, outputs, inputId, outputId);
+  const name = (d, i, kind) => d.label || `${kind} ${i + 1}`;
+  const short = (id, list) => (id && list.find((d) => d.deviceId === id)?.label) || 'System default';
+  return (
+    <details className="devices-wrap" open={warn || undefined}>
+      <summary>
+        Audio: <b>{short(inputId, inputs)}</b> in · <b>{canPickOutput() ? short(outputId, outputs) : 'system output'}</b> out
+      </summary>
+    <div className="devices">
+      <label>
+        <span>Listen with</span>
+        <select value={inputId} onChange={(e) => setInputId(e.target.value)}>
+          <option value="">System default</option>
+          {inputs.filter((d) => d.deviceId !== 'default' && d.deviceId !== 'communications').map((d, i) => (
+            <option key={d.deviceId} value={d.deviceId}>{name(d, i, 'Microphone')}</option>
+          ))}
+        </select>
+      </label>
+      {canPickOutput() && (
+        <label>
+          <span>Whisper to</span>
+          <select value={outputId} onChange={(e) => setOutputId(e.target.value)}>
+            <option value="">System default</option>
+            {outputs.filter((d) => d.deviceId !== 'default' && d.deviceId !== 'communications').map((d, i) => (
+              <option key={d.deviceId} value={d.deviceId}>{name(d, i, 'Output')}</option>
+            ))}
+          </select>
+        </label>
+      )}
+      {!labeled && <button className="text-btn small" onClick={onUnlock}>Show device names</button>}
+      {warn && (
+        <p className="warn" role="alert">
+          That mic looks like your earbuds. Earbud mics drop to call quality and add lag: listen with the laptop mic.
+        </p>
+      )}
+    </div>
+    </details>
+  );
+}
+
 function LiveScreen({ live, now }) {
+  if (live.status === 'calibrating' || live.status === 'calibrate_failed') return <Calibration live={live} />;
   const startedAt = live.getStartedAt();
   const shares = live.getShares();
   const sum = shares ? STATES.reduce((a, k) => a + shares[k], 0) : 0;
@@ -169,16 +266,23 @@ function LiveScreen({ live, now }) {
     <>
       <Ring shares={pct ? shares : null} label="Conversation in progress">
         <div className="hero">{connecting ? '…' : fmtClock(elapsed)}</div>
-        <div className="hero-sub">{connecting ? 'connecting' : 'listening · coach is in your earbuds'}</div>
+        <div className="hero-sub">
+          {connecting ? 'connecting' : `listening · ${PERSONAS.find((p) => p.id === live.personaSet)?.label || 'coach'} is in your earbuds`}
+        </div>
       </Ring>
       <Legend rows={stateRows(pct)} />
-      {!connecting && <HoldToTalk speaker={live.speaker} onChange={live.sendSpeaker} />}
+      {!connecting && (
+        <div className="live-controls">
+          <TalkOverride speaker={live.speaker} onChange={live.sendSpeaker} />
+          <button className="help-btn" onClick={live.help} title="Whisper the line now instead of waiting">Help me</button>
+        </div>
+      )}
     </>
   );
 }
 
 function DemoPanel({ live }) {
-  const { suggestion, timing, engagement, transcript } = live;
+  const { suggestion, timing, engagement, transcript, handled } = live;
   const ms = timing?.latencyMs ?? suggestion?.latencyMs;
   const slow = typeof ms === 'number' && ms > LATENCY_TARGET_MS;
   const linesRef = useRef(null);
@@ -190,14 +294,22 @@ function DemoPanel({ live }) {
       <h2>Demo view</h2>
       <div className={`say ${suggestion?.mode || ''}`}>
         {suggestion && <span className={`badge ${suggestion.mode}`}>{MODE_LABEL[suggestion.mode] || suggestion.mode}</span>}
-        <p className="say-text">{suggestion ? suggestion.text : 'Waiting for the conversation…'}</p>
+        <p className={`say-text ${handled && !suggestion ? 'handled' : ''}`}>
+          {suggestion ? suggestion.text : handled ? 'You handled it' : 'Waiting for the conversation…'}
+        </p>
       </div>
       <Legend
         rows={[
           { label: 'Reading', color: `var(--${engagement?.state || 'muted'})`, value: engagement ? LABEL[engagement.state] : '—' },
           { label: 'You talk', color: 'var(--accent)', value: typeof engagement?.talkRatio === 'number' ? `${Math.round(engagement.talkRatio * 100)}%` : '—' },
           { label: 'Latency', color: slow ? 'var(--danger)' : 'var(--engaged)', value: typeof ms === 'number' ? `${Math.round(ms)} ms` : '—' },
-          { label: 'Voice', color: 'var(--muted)', value: typeof timing?.ttsMs === 'number' ? `${Math.round(timing.ttsMs)} ms` : '—' },
+          {
+            label: timing?.heldMs ? 'Voice / held' : 'Voice',
+            color: 'var(--muted)',
+            value: typeof timing?.ttsMs === 'number'
+              ? `${Math.round(timing.ttsMs)}${timing.heldMs ? ` / ${Math.round(timing.heldMs)}` : ''} ms`
+              : '—',
+          },
         ]}
       />
       {engagement?.reasons?.length > 0 && (
@@ -229,7 +341,32 @@ export default function App() {
     });
   }, []);
   const live = useLive(onEnd);
-  const inSession = live.status === 'live' || live.status === 'connecting';
+  const inSession = ['live', 'connecting', 'calibrating', 'calibrate_failed'].includes(live.status);
+
+  // Devices: laptop mic in, earbuds out. Only device ids are remembered.
+  const [devices, setDevices] = useState({ inputs: [], outputs: [], labeled: false });
+  const [inputId, setInputIdState] = useState(() => loadDevicePref('input'));
+  const [outputId, setOutputIdState] = useState(() => loadDevicePref('output'));
+  const refreshDevices = useCallback(async () => {
+    try {
+      const d = await listDevices();
+      setDevices(d);
+      if (d.labeled) {
+        setInputIdState((cur) => pickInput(d.inputs, cur || loadDevicePref('input')));
+        setOutputIdState((cur) => pickOutput(d.outputs, cur));
+      }
+    } catch { /* no device access */ }
+  }, []);
+  useEffect(() => {
+    refreshDevices();
+    navigator.mediaDevices?.addEventListener?.('devicechange', refreshDevices);
+    return () => navigator.mediaDevices?.removeEventListener?.('devicechange', refreshDevices);
+  }, [refreshDevices]);
+  useEffect(() => { if (live.status === 'calibrating') refreshDevices(); }, [live.status, refreshDevices]);
+  const setInputId = (id) => { setInputIdState(id); saveDevicePref('input', id); };
+  const setOutputId = (id) => { setOutputIdState(id); saveDevicePref('output', id); live.setOutputDevice(id); };
+  const unlock = async () => { try { await unlockLabels(); } catch { /* denied */ } refreshDevices(); };
+  const startConversation = () => live.start({ inputId, outputId });
   const now = useNow(inSession);
 
   const toggleDemo = () => {
@@ -269,12 +406,25 @@ export default function App() {
       {inSession ? (
         <LiveScreen live={live} now={now} />
       ) : (
-        <Report
-          sessions={sessions}
-          range={range}
-          setRange={setRange}
-          onClear={() => { clearSessions(); setSessions([]); }}
-        />
+        <>
+          <Report
+            sessions={sessions}
+            range={range}
+            setRange={setRange}
+            onClear={() => { clearSessions(); setSessions([]); }}
+          />
+          <section className="setup" aria-label="Before you start">
+            <PersonaPicker value={live.persona} onChange={live.setPersona} />
+            <DevicePicker
+              devices={devices}
+              inputId={inputId}
+              outputId={outputId}
+              setInputId={setInputId}
+              setOutputId={setOutputId}
+              onUnlock={unlock}
+            />
+          </section>
+        </>
       )}
 
       {demo && <DemoPanel live={live} />}
@@ -283,7 +433,7 @@ export default function App() {
         {inSession ? (
           <button className="primary stop" onClick={live.stop}>End conversation</button>
         ) : (
-          <button className="primary start" onClick={live.start}>Start a conversation</button>
+          <button className="primary start" onClick={startConversation}>Start a conversation</button>
         )}
       </div>
     </main>
