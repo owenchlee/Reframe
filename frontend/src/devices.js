@@ -13,6 +13,14 @@ export function saveDevicePref(kind, id) {
 
 export const canPickOutput = () => typeof HTMLMediaElement !== 'undefined' && 'setSinkId' in HTMLMediaElement.prototype;
 
+// Phones route audio to connected Bluetooth earbuds by themselves, so no output picker there.
+export function isPhone() {
+  if (navigator.userAgentData && typeof navigator.userAgentData.mobile === 'boolean') return navigator.userAgentData.mobile;
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)
+    || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent)); // iPadOS reports as Mac
+}
+export const showOutputPicker = () => canPickOutput() && !isPhone();
+
 // Lists inputs/outputs. Labels are empty until mic permission has been granted once.
 export async function listDevices() {
   if (!navigator.mediaDevices?.enumerateDevices) return { inputs: [], outputs: [], labeled: false };

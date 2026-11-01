@@ -2,9 +2,12 @@
 //
 // Sources, strongest first:
 //   1. Push-to-talk: while the user holds the talk key ({type:"speaker", who:"me"}), words are "me".
-//   2. Diarization: after calibration, Deepgram's speaker index for the user's voice is "me";
-//      any other or unknown index is "them".
-//   3. Default: "them" (uncalibrated and no push-to-talk = the original behavior).
+//   2. Voice match (when the user's voice is enrolled, see voice.js): one vote per segment (group of
+//      words) of at least MIN_SEGMENT_SECONDS. Similarity above ME_HIGH = "me", below THEM_LOW = "them".
+//   3. Diarization: after calibration, Deepgram's speaker index for the user's voice is "me";
+//      any other or unknown index is "them". Used for in-between votes and short segments, unless
+//      diarization has collapsed to one label (then: "them", except a quick continuation of the user).
+//   4. Default: "them" (uncalibrated and no push-to-talk = the original behavior).
 // Then smoothing: each group of words (split at pauses > FLOOR_HOLD_MS) gets ONE owner by majority,
 // and whoever holds the floor keeps it across short pauses, so a turn never flips mid-sentence.
 
@@ -22,6 +25,20 @@ const CALIB_MIN_SPEECH_SEC = 1.5;
 // least CALIB_SECOND_MIN_SEC seconds (someone else talked, or the diarizer split the user's voice).
 const CALIB_SECOND_MAX_SHARE = 0.2;
 const CALIB_SECOND_MIN_SEC = 0.5;
+// ---- Voice match (only used when a scoreFn is passed to labelFinal, i.e. the user is enrolled) ----
+// Cosine similarity to the enrolled voice (3D-Speaker CAM++, voice.js). Measured offline on TTS voices
+// with a separate enrollment clip: same voice 0.77-0.84, other voices 0.14-0.37 (a second male voice
+// 0.28-0.37). Real voices on a phone mic will score lower: tune with the [labels] log lines.
+// Above ME_HIGH: "me". Below THEM_LOW: "them". In between: diarization decides (or the collapse rule).
+const ME_HIGH = 0.5;
+const THEM_LOW = 0.4;
+// Segments with less speech than this (seconds, from first word start to last word end) get no vote:
+// the embedding of a word or two is too noisy.
+const MIN_SEGMENT_SECONDS = 1.0;
+// Diarization counts as collapsed when, over the last COLLAPSE_WINDOW_WORDS final words, the second
+// most common speaker label has less than COLLAPSE_MIN_SHARE of them (everyone got one label).
+const COLLAPSE_WINDOW_WORDS = 60;
+const COLLAPSE_MIN_SHARE = 0.1;
 
 class SpeakerLabeler {
   constructor() {
@@ -29,6 +46,28 @@ class SpeakerLabeler {
     this.meLabel = null; // diarization index for the user, set by calibration
     this.calib = null; // { startSec, stopSec, durations: Map<label, seconds> }
     this.floor = null; // { who, lastEnd } holder of the floor after the last final word
+    this.recentSpeakers = []; // diarization labels of the last COLLAPSE_WINDOW_WORDS final words
+    this.voiceOn = false; // set by the server once the user's voice is enrolled
+    this.decisions = []; // one entry per segment from the last labelFinal call (numbers only)
+  }
+
+  // True when diarization is giving (almost) everyone the same label.
+  diarCollapsed() {
+    const counts = new Map();
+    for (const sp of this.recentSpeakers) counts.set(sp, (counts.get(sp) || 0) + 1);
+    const ranked = [...counts.values()].sort((a, b) => b - a);
+    if (ranked.length < 2) return true;
+    return ranked[1] / this.recentSpeakers.length < COLLAPSE_MIN_SHARE;
+  }
+
+  noteSpeakers(words) {
+    for (const w of words) {
+      if (w.speaker === undefined || w.speaker === null) continue;
+      this.recentSpeakers.push(w.speaker);
+    }
+    if (this.recentSpeakers.length > COLLAPSE_WINDOW_WORDS) {
+      this.recentSpeakers.splice(0, this.recentSpeakers.length - COLLAPSE_WINDOW_WORDS);
+    }
   }
 
   // ---- push-to-talk ----
@@ -104,8 +143,13 @@ class SpeakerLabeler {
   }
 
   // Per-word label before smoothing (used for interim results and the "they kept talking" check).
+  // With voice matching on and diarization collapsed, the diarization label means nothing, so new
+  // words count as "them" (so a whisper still stops when someone resumes talking).
   rawWho(w) {
-    return this.pttAt(w.start) || this.diarWho(w);
+    const ptt = this.pttAt(w.start);
+    if (ptt) return ptt;
+    if (this.voiceOn && this.diarCollapsed()) return 'them';
+    return this.diarWho(w);
   }
 
   // Label for an interim transcript: talk key held now -> "me", else the words' majority.
@@ -117,8 +161,11 @@ class SpeakerLabeler {
   }
 
   // Labels for the words of one final result, in order. Updates the floor.
-  labelFinal(words) {
+  // scoreFn (optional, voice matching): (words) => { sim, ms } | null for one segment's words.
+  // After the call, this.decisions holds one numbers-only record per segment for diagnostics.
+  labelFinal(words, scoreFn = null) {
     const labels = [];
+    this.decisions = [];
     let prevEnd = this.floor ? this.floor.lastEnd : null;
     let group = [];
     const flush = () => {
@@ -128,13 +175,33 @@ class SpeakerLabeler {
       const meCount = free.filter((w) => this.diarWho(w) === 'me').length;
       const themCount = free.length - meCount;
       const majority = meCount > themCount ? 'me' : 'them';
+      this.noteSpeakers(group);
+      const duration = group[group.length - 1].end - group[0].start;
+      // Only the words not forced by push-to-talk are scored, so their span is what must be long enough.
+      const freeSpan = free.length ? free[free.length - 1].end - free[0].start : 0;
+      const vote = scoreFn && freeSpan >= MIN_SEGMENT_SECONDS ? scoreFn(free) : null;
+      const collapsed = this.diarCollapsed();
       let owner;
-      if (!free.length) owner = 'me';
-      else if (continuing) {
+      let source;
+      if (!free.length) { owner = 'me'; source = 'ptt'; }
+      else if (vote && vote.sim > ME_HIGH) { owner = 'me'; source = 'voice'; }
+      else if (vote && vote.sim < THEM_LOW) { owner = 'them'; source = 'voice'; }
+      else if (scoreFn && collapsed) {
+        // Diarization is useless here: "them", unless the user is simply continuing after a short pause.
+        owner = continuing && this.floor.who === 'me' ? 'me' : 'them';
+        source = continuing && this.floor.who === 'me' ? 'continuity' : 'collapsed';
+      } else if (continuing) {
         const other = this.floor.who === 'me' ? themCount : meCount;
         const clearlyOther = other >= FLIP_MIN_WORDS && other / free.length >= FLIP_MIN_SHARE;
         owner = clearlyOther ? (this.floor.who === 'me' ? 'them' : 'me') : this.floor.who;
-      } else owner = majority;
+        source = 'diar';
+      } else { owner = majority; source = 'diar'; }
+      const diar = {};
+      for (const w of group) diar[w.speaker ?? '?'] = (diar[w.speaker ?? '?'] || 0) + 1;
+      this.decisions.push({
+        start: group[0].start, words: group.length, duration, diar, collapsed,
+        sim: vote ? vote.sim : null, embedMs: vote ? vote.ms : null, label: owner, source,
+      });
       for (const w of group) labels.push(this.pttAt(w.start) || owner);
       const last = group[group.length - 1];
       this.floor = { who: labels[labels.length - 1], lastEnd: last.end };
@@ -152,4 +219,4 @@ class SpeakerLabeler {
   }
 }
 
-module.exports = { SpeakerLabeler, FLOOR_HOLD_MS };
+module.exports = { SpeakerLabeler, FLOOR_HOLD_MS, ME_HIGH, THEM_LOW, MIN_SEGMENT_SECONDS };

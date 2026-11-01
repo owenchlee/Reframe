@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useLive, PERSONAS, CALIBRATE_MS } from './useLive.js';
 import {
-  canPickOutput, inputLooksLikeEarbuds, listDevices, loadDevicePref, pickInput, pickOutput, saveDevicePref, unlockLabels,
+  inputLooksLikeEarbuds, listDevices, loadDevicePref, pickOutput, saveDevicePref, showOutputPicker,
 } from './devices.js';
 import Ring from './Ring.jsx';
+import { PROFILE_MAX, clearSavedProfile, fetchDefaultProfile, loadSavedProfile, saveProfile } from './profile.js';
 import {
   STATES, avgTalkRatio, clearSessions, loadSessions, saveSessions, sumShares, takeaway, toPercents,
 } from './sessions.js';
@@ -193,45 +194,163 @@ function PersonaPicker({ value, onChange }) {
   );
 }
 
-function DevicePicker({ devices, inputId, outputId, setInputId, setOutputId, onUnlock }) {
+// "About you": what the coach uses to answer questions about the user. Collapsed = one-line preview.
+function AboutYou({ text, onChange, canReset, onReset, flash }) {
+  const firstLine = text.split('\n').map((l) => l.trim()).find(Boolean);
+  return (
+    <details className="about">
+      <summary>
+        <span>About you</span>
+        <span className="about-preview">{firstLine || 'Add a few lines about yourself'}</span>
+      </summary>
+      <p className="helper" id="about-help">The coach answers questions about you from this. Edit anything.</p>
+      <textarea
+        value={text}
+        maxLength={PROFILE_MAX}
+        rows={6}
+        aria-describedby="about-help"
+        aria-label="About you"
+        placeholder="What you do, where you're from, what you're into, a story or two you like telling."
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <div className="about-foot">
+        <span className="counter">{text.length} / {PROFILE_MAX}</span>
+        <span className="saved" aria-live="polite">{flash ? 'Saved' : ''}</span>
+        <button type="button" className="text-btn small" disabled={!canReset} onClick={onReset}>Reset to default</button>
+      </div>
+    </details>
+  );
+}
+
+// Audio settings (collapsed) + Test whisper + mic tip. Phones: default mic, no output picker
+// (the OS sends audio to connected earbuds). The input list only appears once labels are known.
+function AudioSettings({ devices, inputId, outputId, setInputId, setOutputId, onTest }) {
   const { inputs, outputs, labeled } = devices;
-  const warn = labeled && inputLooksLikeEarbuds(inputs, outputs, inputId, outputId);
-  const name = (d, i, kind) => d.label || `${kind} ${i + 1}`;
-  const short = (id, list) => (id && list.find((d) => d.deviceId === id)?.label) || 'System default';
+  const pickOut = showOutputPicker();
   const real = (d) => d.deviceId !== 'default' && d.deviceId !== 'communications';
+  const realInputs = inputs.filter(real);
+  const showInputs = labeled && realInputs.length > 1;
+  // The earbud-mic warning is for laptops (where we pick the output); on phones both mics are fine.
+  const warn = pickOut && labeled && inputLooksLikeEarbuds(inputs, outputs, inputId, outputId);
+  const label = (id, list) => (id && list.find((d) => d.deviceId === id)?.label) || 'Default';
+  const [test, setTest] = useState(null); // null | 'playing' | 'blocked'
+  const runTest = async () => {
+    setTest('playing');
+    const ok = await onTest();
+    setTest(ok ? 'playing' : 'blocked');
+    if (ok) setTimeout(() => setTest(null), 2500);
+  };
   return (
     <>
-      <details className="devices-wrap">
-        <summary>
-          <span>Audio settings</span>
-          <span className="devices-now">{short(inputId, inputs)} → {canPickOutput() ? short(outputId, outputs) : 'system output'}</span>
-        </summary>
-        <div className="devices">
-          <label>
-            <span>Listen with (laptop mic)</span>
-            <select value={inputId} onChange={(e) => setInputId(e.target.value)}>
-              <option value="">System default</option>
-              {inputs.filter(real).map((d, i) => <option key={d.deviceId} value={d.deviceId}>{name(d, i, 'Microphone')}</option>)}
-            </select>
-          </label>
-          {canPickOutput() && (
-            <label>
-              <span>Whisper to (earbuds)</span>
-              <select value={outputId} onChange={(e) => setOutputId(e.target.value)}>
-                <option value="">System default</option>
-                {outputs.filter(real).map((d, i) => <option key={d.deviceId} value={d.deviceId}>{name(d, i, 'Output')}</option>)}
-              </select>
-            </label>
-          )}
-          {!labeled && <button className="text-btn small" onClick={onUnlock}>Show device names</button>}
-        </div>
-      </details>
+      <div className="test-row">
+        <button className="secondary" onClick={runTest}>Test whisper</button>
+        <p className="test-status" aria-live="polite">
+          {test === 'playing' ? 'Playing two soft notes…' : test === 'blocked' ? "Couldn't play sound. Check the volume." : 'Plug in earbuds, then check you hear it.'}
+        </p>
+      </div>
+      <p className="tip">Phone mic hears you best, earbud mic hears them best, try both.</p>
+      {(showInputs || pickOut) && (
+        <details className="devices-wrap">
+          <summary>
+            <span>Audio settings</span>
+            <span className="devices-now">{label(inputId, inputs)}{pickOut ? ` → ${label(outputId, outputs)}` : ''}</span>
+          </summary>
+          <div className="devices">
+            {showInputs && (
+              <label>
+                <span>Listen with</span>
+                <select value={inputId} onChange={(e) => setInputId(e.target.value)}>
+                  <option value="">Default mic</option>
+                  {realInputs.map((d) => <option key={d.deviceId} value={d.deviceId}>{d.label}</option>)}
+                </select>
+              </label>
+            )}
+            {pickOut && (
+              <label>
+                <span>Whisper to</span>
+                <select value={outputId} onChange={(e) => setOutputId(e.target.value)}>
+                  <option value="">System default</option>
+                  {outputs.filter(real).map((d, i) => <option key={d.deviceId} value={d.deviceId}>{d.label || `Output ${i + 1}`}</option>)}
+                </select>
+              </label>
+            )}
+          </div>
+        </details>
+      )}
       {warn && (
         <p className="warn" role="alert">
-          Your mic looks like your earbuds. Earbud mics drop to call quality and add lag: pick the laptop mic in Audio settings.
+          Your mic looks like your earbuds, which adds lag on a laptop. Try the laptop mic in Audio settings.
         </p>
       )}
     </>
+  );
+}
+
+// Pocket mode: near-black overlay that swallows every touch. Only a press-and-hold on the ring
+// (UNLOCK_HOLD_MS) unlocks it, so pocket touches cannot end or change anything. The socket,
+// mic and whispers keep running underneath.
+const UNLOCK_HOLD_MS = 1500;
+function PocketMode({ elapsed, note, onUnlock }) {
+  const overlayRef = useRef(null);
+  const timer = useRef(null);
+  const [holding, setHolding] = useState(false);
+  useEffect(() => {
+    const el = overlayRef.current;
+    // Native, non-passive listeners: React's touch handlers are passive and can't preventDefault.
+    const block = (e) => { if (e.cancelable) e.preventDefault(); };
+    const opts = { passive: false };
+    ['touchstart', 'touchmove', 'touchend', 'gesturestart', 'contextmenu', 'dblclick'].forEach((t) => el.addEventListener(t, block, opts));
+    el.focus();
+    return () => ['touchstart', 'touchmove', 'touchend', 'gesturestart', 'contextmenu', 'dblclick'].forEach((t) => el.removeEventListener(t, block, opts));
+  }, []);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const begin = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.currentTarget.setPointerCapture && e.pointerId !== undefined) {
+      try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    }
+    setHolding(true);
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => { setHolding(false); onUnlock(); }, UNLOCK_HOLD_MS);
+  };
+  const cancel = () => {
+    clearTimeout(timer.current);
+    setHolding(false);
+  };
+  const swallow = (e) => { e.preventDefault(); e.stopPropagation(); };
+  return (
+    <div
+      className="pocket"
+      ref={overlayRef}
+      tabIndex={-1}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Pocket mode. Press and hold the ring to unlock."
+      onPointerDown={swallow}
+      onPointerUp={swallow}
+      onClick={swallow}
+      onKeyDown={swallow}
+    >
+      <span className="pocket-timer">{fmtClock(elapsed)}{note ? ` · ${note}` : ''}</span>
+      <button
+        type="button"
+        className={`pocket-ring ${holding ? 'holding' : ''}`}
+        aria-label="Hold to unlock"
+        onPointerDown={begin}
+        onPointerUp={cancel}
+        onPointerCancel={cancel}
+        onPointerLeave={cancel}
+        onClick={swallow}
+        onKeyDown={swallow}
+      >
+        <svg viewBox="0 0 64 64" aria-hidden="true">
+          <circle cx="32" cy="32" r="28" className="track" />
+          <circle cx="32" cy="32" r="28" className="fill" style={{ transitionDuration: holding ? `${UNLOCK_HOLD_MS}ms` : '200ms' }} />
+        </svg>
+        <span className="pocket-hint">hold</span>
+      </button>
+    </div>
   );
 }
 
@@ -312,24 +431,36 @@ function Metrics({ timing, suggestion }) {
   );
 }
 
-function LiveView({ live, now, demo }) {
+function LiveView({ live, now, demo, onPocket }) {
   const startedAt = live.getStartedAt();
   // `now` ticks once a second, so it can be slightly older than startedAt right after going live.
   const elapsed = startedAt ? Math.max(0, (now - startedAt) / 1000) : 0;
   const connecting = live.status === 'connecting';
+  const lost = live.status === 'lost';
   const calibrating = live.status === 'calibrating' || live.status === 'calibrate_failed';
   const persona = PERSONAS.find((p) => p.id === (live.personaSet || live.persona))?.label;
   return (
     <>
       <header className="live-head">
         <div className="lh-info">
-          <span className="lh-dot" aria-hidden="true" />
-          <span className="lh-timer">{calibrating ? 'Setting up' : connecting ? '…' : fmtClock(elapsed)}</span>
+          <span className={`lh-dot ${lost || live.micPaused ? 'off' : ''}`} aria-hidden="true" />
+          <span className="lh-timer">{calibrating ? 'Setting up' : connecting && !startedAt ? '…' : fmtClock(elapsed)}</span>
           {persona && <span className="lh-persona">{persona}</span>}
         </div>
         <button className="end-btn" onClick={live.stop}>End</button>
       </header>
-      {calibrating ? (
+      {live.micPaused && !lost && (
+        <button className="banner" onClick={live.resumeMic}>
+          <b>Coaching paused.</b> The phone stopped the mic. Tap to resume.
+        </button>
+      )}
+      {lost ? (
+        <section className="calib">
+          <p className="calib-title">Connection lost</p>
+          <p className="calib-text">{live.lostReason} Your conversation is kept; resuming reconnects and relearns your voice.</p>
+          <button className="primary start calib-retry" onClick={live.resumeConnection}>Tap to resume</button>
+        </section>
+      ) : calibrating ? (
         <Calibration live={live} />
       ) : (
         <>
@@ -338,6 +469,11 @@ function LiveView({ live, now, demo }) {
           <Transcript lines={live.transcript} />
           {demo && <Metrics timing={live.timing} suggestion={live.suggestion} />}
         </>
+      )}
+      {!lost && !connecting && (
+        <button className="pocket-btn" onClick={onPocket}>
+          Pocket mode <span>locks the screen, keeps coaching</span>
+        </button>
       )}
     </>
   );
@@ -355,7 +491,49 @@ export default function App() {
     });
   }, []);
   const live = useLive(onEnd);
-  const inSession = ['live', 'connecting', 'calibrating', 'calibrate_failed'].includes(live.status);
+  const inSession = ['live', 'connecting', 'calibrating', 'calibrate_failed', 'lost'].includes(live.status);
+  const [pocket, setPocket] = useState(false);
+
+  // About you: the user's saved edit, else the server default (GET /api/profile-default).
+  // If the fetch fails the box starts empty and everything keeps working.
+  const [profile, setProfileText] = useState(() => loadSavedProfile() ?? '');
+  const [profileDefault, setProfileDefault] = useState(null);
+  const [profileFlash, setProfileFlash] = useState(false);
+  const editedRef = useRef(loadSavedProfile() !== null);
+  const saveTimer = useRef(null);
+  const flashTimer = useRef(null);
+  const flashSaved = () => {
+    setProfileFlash(true);
+    clearTimeout(flashTimer.current);
+    flashTimer.current = setTimeout(() => setProfileFlash(false), 1500);
+  };
+  useEffect(() => {
+    const ctrl = new AbortController();
+    fetchDefaultProfile(ctrl.signal)
+      .then((text) => {
+        setProfileDefault(text);
+        if (!editedRef.current) setProfileText(text);
+      })
+      .catch(() => {});
+    return () => ctrl.abort();
+  }, []);
+  useEffect(() => { live.setProfile(profile); }, [profile, live.setProfile]);
+  const editProfile = (text) => {
+    editedRef.current = true;
+    setProfileText(text);
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => { saveProfile(text); flashSaved(); }, 500);
+  };
+  const resetProfile = () => {
+    clearTimeout(saveTimer.current);
+    editedRef.current = false;
+    clearSavedProfile();
+    setProfileText(profileDefault ?? '');
+    flashSaved();
+  };
+  // The server confirmed it has the notes (only visible if the box is on screen).
+  useEffect(() => { if (live.profileAck?.ok) flashSaved(); }, [live.profileAck]);
+  useEffect(() => { if (!inSession) setPocket(false); }, [inSession]);
 
   // Devices: laptop mic in, earbuds out. Only device ids are remembered.
   const [devices, setDevices] = useState({ inputs: [], outputs: [], labeled: false });
@@ -366,7 +544,8 @@ export default function App() {
       const d = await listDevices();
       setDevices(d);
       if (d.labeled) {
-        setInputIdState((cur) => pickInput(d.inputs, cur || loadDevicePref('input')));
+        // Default input unless a saved choice still exists.
+        setInputIdState((cur) => (cur && d.inputs.some((x) => x.deviceId === cur) ? cur : ''));
         setOutputIdState((cur) => pickOutput(d.outputs, cur));
       }
     } catch { /* no device access */ }
@@ -379,8 +558,8 @@ export default function App() {
   useEffect(() => { if (live.status === 'calibrating') refreshDevices(); }, [live.status, refreshDevices]);
   const setInputId = (id) => { setInputIdState(id); saveDevicePref('input', id); };
   const setOutputId = (id) => { setOutputIdState(id); saveDevicePref('output', id); live.setOutputDevice(id); };
-  const unlock = async () => { try { await unlockLabels(); } catch { /* denied */ } refreshDevices(); };
-  const startConversation = () => live.start({ inputId, outputId });
+  // Called directly in the tap handler so audio and the wake lock unlock inside the gesture.
+  const startConversation = () => live.start({ inputId, outputId: showOutputPicker() ? outputId : '' });
   const now = useNow(inSession);
 
   const toggleDemo = () => {
@@ -389,14 +568,26 @@ export default function App() {
 
   // Undocumented keyboard shortcut: hold space to force "me" (labels normally come from the server).
   useEffect(() => {
-    if (live.status !== 'live') return undefined;
+    if (live.status !== 'live' || pocket) return undefined;
     const skip = (t) => t && /^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(t.tagName);
     const down = (e) => { if (e.code === 'Space' && !e.repeat && !skip(e.target)) { e.preventDefault(); live.sendSpeaker('me'); } };
     const up = (e) => { if (e.code === 'Space' && !skip(e.target)) { e.preventDefault(); live.sendSpeaker('them'); } };
     window.addEventListener('keydown', down);
     window.addEventListener('keyup', up);
     return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
-  }, [live.status, live.sendSpeaker]);
+  }, [live.status, live.sendSpeaker, pocket]);
+
+  // While in pocket mode, everything behind the overlay is inert (no focus, no clicks, no keys).
+  const liveRef = useRef(null);
+  useEffect(() => {
+    const el = liveRef.current;
+    if (!el) return;
+    if (pocket) el.setAttribute('inert', '');
+    else el.removeAttribute('inert');
+  }, [pocket, inSession]);
+  const startedAt = live.getStartedAt();
+  const pocketElapsed = startedAt ? Math.max(0, (now - startedAt) / 1000) : 0;
+  const pocketNote = live.status === 'lost' ? 'connection lost, unlock to resume' : live.micPaused ? 'paused, unlock to resume' : '';
 
   const today = new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
 
@@ -404,9 +595,12 @@ export default function App() {
     <>
     <div className="blobs" aria-hidden="true"><div className="grp g1"><i className="blob b1" /><i className="blob b2" /></div><div className="grp g2"><i className="blob b3" /><i className="blob b4" /></div></div>
     {inSession ? (
-      <main className="app live">
-        <LiveView live={live} now={now} demo={demo} />
-      </main>
+      <>
+        <main className="app live" ref={liveRef}>
+          <LiveView live={live} now={now} demo={demo} onPocket={() => setPocket(true)} />
+        </main>
+        {pocket && <PocketMode elapsed={pocketElapsed} note={pocketNote} onUnlock={() => setPocket(false)} />}
+      </>
     ) : (
       <main className="app home">
         <header>
@@ -420,6 +614,16 @@ export default function App() {
           </button>
         </header>
 
+        <section className="intro" aria-labelledby="intro-title">
+          <h2 className="intro-title" id="intro-title">Larp a more confident you.</h2>
+          <p className="intro-sub">Reframe listens to your conversation and whispers what to say, one line at a time, in your earbud.</p>
+          <ol className="steps">
+            <li><span className="step-n">1.</span> Put in an earbud.</li>
+            <li><span className="step-n">2.</span> Tap Start and talk.</li>
+            <li><span className="step-n">3.</span> Hear one line when you need it.</li>
+          </ol>
+        </section>
+
         {live.error && <div className="error" role="alert">{live.error}</div>}
 
         <Report
@@ -432,16 +636,24 @@ export default function App() {
         <div className="action">
           <section className="setup" aria-label="Before you start">
             <PersonaPicker value={live.persona} onChange={live.setPersona} />
-            <DevicePicker
+            <AboutYou
+              text={profile}
+              onChange={editProfile}
+              canReset={profileDefault !== null && profile !== profileDefault}
+              onReset={resetProfile}
+              flash={profileFlash}
+            />
+            <AudioSettings
               devices={devices}
               inputId={inputId}
               outputId={outputId}
               setInputId={setInputId}
               setOutputId={setOutputId}
-              onUnlock={unlock}
+              onTest={() => live.testWhisper(outputId)}
             />
           </section>
           <button className="primary start" onClick={startConversation}>Start a conversation</button>
+          <p className="privacy">Conversations aren't saved: no audio or words. Your About you notes stay on this device.</p>
         </div>
       </main>
     )}

@@ -205,3 +205,109 @@ html, body { height: 100dvh; overflow: hidden; }
   .tline { max-width: 70%; }
 }
 @media (prefers-reduced-motion: reduce) { .coach-card { animation: none; } }
+
+/* ---------- Phone-first (390x844 baseline): 48px targets, safe areas, pocket mode ---------- */
+.seg-control button, .seg-control.persona button { min-height: 48px; }
+.switch { min-height: 48px; }
+.end-btn { min-height: 48px; padding: 0 22px; }
+.devices select { min-height: 48px; font-size: 1rem; }
+.devices-wrap summary { min-height: 48px; align-items: center; }
+.text-btn { min-height: 48px; }
+.end-btn:hover { background: rgba(0,0,0,.5); color: var(--accent); }
+@media (hover: hover) { .end-btn:hover { background: var(--accent); color: var(--on-accent); } }
+
+.secondary { flex: none; min-height: 48px; padding: 0 20px; border-radius: 999px; border: 1px solid rgba(255,255,255,.35); background: rgba(0,0,0,.5); color: var(--text); font-weight: 600; cursor: pointer; }
+.secondary:active { transform: scale(.98); }
+.test-row { display: flex; align-items: center; gap: 12px; }
+.test-status { margin: 0; color: var(--muted); font-size: .85rem; line-height: 1.3; min-width: 0; }
+.tip { margin: 0; color: var(--muted); font-size: .85rem; }
+.app.home .privacy { margin: -4px 0 0; font-size: .78rem; }
+
+.lh-dot.off { background: var(--muted); box-shadow: none; }
+.banner { flex: none; width: 100%; min-height: 48px; text-align: left; padding: 10px 14px; border-radius: 14px; border: 1px solid var(--accent); background: #1a0610; color: var(--accent-soft); font-size: .92rem; cursor: pointer; }
+.banner b { color: #fff; }
+.pocket-btn { flex: none; width: 100%; min-height: 56px; border-radius: 999px; border: 1px solid rgba(255,255,255,.35); background: #fff; color: #000; font-weight: 700; font-size: 1.05rem; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0; line-height: 1.15;
+  box-shadow: 0 6px 28px color-mix(in srgb, var(--accent) 35%, transparent); }
+.pocket-btn span { font-weight: 500; font-size: .78rem; color: #555; }
+.pocket-btn:active { transform: scale(.98); }
+
+/* Pocket overlay: near-black (OLED off), swallows touches; only the ring's hold unlocks */
+.pocket { position: fixed; inset: 0; z-index: 50; background: #000; display: flex; flex-direction: column; align-items: center; justify-content: space-between;
+  padding: calc(env(safe-area-inset-top) + 18px) 20px calc(env(safe-area-inset-bottom) + 40px);
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; outline: none; }
+.pocket-timer { color: rgba(255,255,255,.22); font-size: .78rem; letter-spacing: .06em; font-variant-numeric: tabular-nums; }
+.pocket-ring { position: relative; width: 96px; height: 96px; border-radius: 50%; border: 0; background: transparent; padding: 0; cursor: pointer;
+  touch-action: none; -webkit-touch-callout: none; }
+.pocket-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.pocket-ring circle { fill: none; stroke-width: 3; }
+.pocket-ring .track { stroke: rgba(255,255,255,.12); }
+.pocket-ring .fill { stroke: var(--accent); stroke-linecap: round; stroke-dasharray: 176; stroke-dashoffset: 176; transition-property: stroke-dashoffset; transition-timing-function: linear; opacity: .7; }
+.pocket-ring.holding .fill { stroke-dashoffset: 0; }
+.pocket-hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,.25); font-size: .75rem; letter-spacing: .12em; text-transform: uppercase; }
+
+@media (max-width: 380px) {
+  .test-row { flex-direction: row; }
+  .secondary { padding: 0 16px; }
+  .coach-text { font-size: clamp(1.6rem, 1rem + 4vw, 2.2rem); }
+}
+@media (max-height: 700px) {
+  .app.live { gap: 8px; }
+  .coach { min-height: 7rem; }
+  .eng-row { padding: 6px 0; }
+}
+/* Short phones: don't pin the setup panel (it would cover half the screen); it ends the scroll instead */
+@media (max-height: 700px) {
+  .app.home .action { position: static; margin-top: 0; padding-top: 4px; }
+  .app.home .action::before { content: none; }
+}
+
+/* About you: collapsible notes the coach answers from (kept on this device) */
+.about summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 8px 2px; font-size: .9rem; color: var(--muted); }
+.about summary::-webkit-details-marker { display: none; }
+.about summary::before { content: ''; width: 7px; height: 7px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: translateY(-2px) rotate(-45deg); transition: transform .2s; flex: none; }
+.about[open] summary::before { transform: translateY(-3px) rotate(45deg); }
+.about summary > span:first-child { color: var(--text); font-weight: 600; flex: none; }
+.about-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.about .helper { margin: 2px 0 8px; color: var(--muted); font-size: .85rem; }
+.about textarea { display: block; width: 100%; min-height: 9.5rem; max-height: 40dvh; resize: vertical; font: inherit; font-size: 16px; line-height: 1.45; color: var(--text);
+  background: rgba(0,0,0,.6); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; caret-color: var(--accent); }
+.about textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
+.about textarea::placeholder { color: rgba(255,255,255,.45); }
+.about-foot { display: flex; align-items: center; gap: 12px; margin-top: 4px; }
+.about-foot .counter { color: var(--muted); font-size: .8rem; font-variant-numeric: tabular-nums; }
+.about-foot .saved { color: var(--accent-soft); font-size: .8rem; }
+.about-foot .text-btn { margin-left: auto; }
+.text-btn:disabled { opacity: .4; cursor: default; }
+.about-foot .text-btn.small { min-height: 48px; padding: 0 4px; }
+
+/* ---------- Landing intro on the Start screen (headline, subline, three steps) ---------- */
+.intro { flex: none; display: flex; flex-direction: column; gap: 10px; padding: 4px 0 6px; }
+.intro .intro-title { display: block; align-self: auto; background: none; color: #fff; padding: 0; margin: 0;
+  font-family: var(--serif); font-weight: 400; font-size: clamp(2rem, 1.4rem + 2.6vw, 2.6rem); line-height: 1.05; letter-spacing: -0.015em; text-wrap: balance; max-width: 16ch; }
+.intro-sub { margin: 0; color: var(--muted); font-size: 1rem; line-height: 1.45; max-width: 36ch; text-wrap: pretty; }
+.steps { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.steps li { display: flex; align-items: baseline; gap: 8px; font-size: 1rem; line-height: 1.35; color: var(--text); }
+.step-n { flex: none; min-width: 1.4em; color: var(--accent); font-weight: 700; font-variant-numeric: tabular-nums; }
+/* Wider screens: the three steps sit in one compact row (wrapping if needed) */
+@media (min-width: 560px) {
+  .steps { flex-direction: row; flex-wrap: wrap; gap: 4px 20px; }
+  .steps li { flex: none; gap: 6px; }
+  .step-n { min-width: 0; }
+}
+/* Short phones (e.g. 360x640): steps collapse to one line, and only the Start button is pinned so it
+   is on screen without scrolling; the rest of the setup scrolls above it. */
+@media (max-height: 700px) {
+  .intro { gap: 6px; padding: 0; }
+  .intro .intro-title { font-size: 1.9rem; }
+  .steps { flex-direction: row; flex-wrap: wrap; gap: 2px 12px; margin: 0; }
+  .steps li { flex: none; font-size: 1rem; }
+  .app.home .action { display: contents; }
+  .app.home .action .primary.start { position: fixed; left: 18px; right: 18px; bottom: calc(env(safe-area-inset-bottom) + 14px);
+    width: auto; max-width: 360px; margin: 0 auto; z-index: 3; }
+  /* Full-width fade behind the fixed Start bar, so content scrolls under it cleanly */
+  .app.home::after { content: ''; position: fixed; left: 0; right: 0; bottom: 0; height: calc(env(safe-area-inset-bottom) + 100px);
+    background: linear-gradient(to top, #000 58%, rgba(0,0,0,0)); z-index: 2; pointer-events: none; }
+  .app.home { padding-bottom: calc(env(safe-area-inset-bottom) + 96px); }
+  .app.home .action .privacy { margin: 0; }
+}

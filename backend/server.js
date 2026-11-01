@@ -12,6 +12,9 @@ const { SpeakerLabeler } = require('./speakerLabeler');
 const { writeSuggestion, warmGroq } = require('./suggest');
 const { streamSpeech, warmTts, MP3_BYTES_PER_SEC } = require('./tts');
 const { PERSONAS, DEFAULT_PERSONA, isPersona } = require('./personas');
+const { LineBank } = require('./lineBank');
+const voice = require('./voice');
+const { loadDefaultProfile, SessionProfile } = require('./profile');
 
 const PORT = Number(process.env.PORT) || 3001; // PORT override is for running tests beside a dev server
 // Stuck detector: the whisper is held (generated + buffered in memory) and only played if nobody
@@ -35,10 +38,21 @@ const WARM_EVERY_MS = 1000; // check often; httpClient only warms a host after i
 const CALIB_FLUSH_TIMEOUT_MS = 1500;
 const PLAYBACK_SLACK_MS = 300; // added to the estimated whisper length before it counts as finished
 const WALL_LOG_SECS = 120; // how much audio-time -> wall-time mapping to keep (numbers only)
+// One console line per finalized segment with numbers only (word count, duration, diarization labels,
+// voice similarity, final label, embedding ms). Never text.
+const DEBUG_LABELS = true;
+// Test only: force every Deepgram speaker label to this index (simulates collapsed diarization).
+const FORCE_SPEAKER = process.env.REFRAME_FORCE_SPEAKER !== undefined && process.env.REFRAME_FORCE_SPEAKER !== ''
+  ? Number(process.env.REFRAME_FORCE_SPEAKER) : null;
+const KEEP_TALKING = 'Keep talking a little longer';
 
 const { DEEPGRAM_API_KEY, ELEVENLABS_API_KEY, GROQ_API_KEY, ELEVENLABS_VOICE_ID, PICOVOICE_ACCESS_KEY } = process.env;
-if (!PICOVOICE_ACCESS_KEY) console.log('[reframe] voiceprint is off (PICOVOICE_ACCESS_KEY not set); using diarization only');
-else console.log('[reframe] PICOVOICE_ACCESS_KEY is set, but voiceprint (Eagle) is not built yet; using diarization only');
+if (PICOVOICE_ACCESS_KEY) console.log('[reframe] PICOVOICE_ACCESS_KEY is set but unused (Picovoice Eagle is not built; voice matching uses sherpa-onnx)');
+console.log(`[reframe] ${voice.init()}`);
+// Loaded once at startup. Only the source file name and length are logged, never the text.
+const DEFAULT_PROFILE = loadDefaultProfile();
+console.log(`[reframe] default profile: ${DEFAULT_PROFILE.source} (${DEFAULT_PROFILE.text.length} chars)`);
+if (FORCE_SPEAKER !== null) console.log(`[reframe] TEST: all diarization labels forced to ${FORCE_SPEAKER}`);
 for (const [name, val] of Object.entries({ DEEPGRAM_API_KEY, ELEVENLABS_API_KEY, GROQ_API_KEY })) {
   if (!val) console.warn(`[reframe] ${name} is not set in backend/.env`);
 }
@@ -46,9 +60,16 @@ for (const [name, val] of Object.entries({ DEEPGRAM_API_KEY, ELEVENLABS_API_KEY,
 const app = express();
 app.use(cors());
 app.get('/health', (req, res) => res.json({ ok: true }));
+// The default "about me" profile (profile.local.txt, else profile.example.txt), for the client to show/edit.
+app.get('/api/profile-default', (req, res) => res.json({ text: DEFAULT_PROFILE.text }));
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/live' });
+
+function forceSpeaker(words) {
+  if (FORCE_SPEAKER !== null && words) for (const w of words) w.speaker = FORCE_SPEAKER;
+  return words;
+}
 
 class LiveSession {
   constructor(client) {
@@ -56,12 +77,19 @@ class LiveSession {
     this.engine = new SignalEngine();
     this.audioBytes = 0; // total PCM bytes received = position on the audio timeline
     this.carry = null; // odd trailing byte from a frame, kept to stay sample-aligned
-    this.labeler = new SpeakerLabeler(); // me/them: push-to-talk override, then calibrated diarization
+    this.labeler = new SpeakerLabeler(); // me/them: push-to-talk, then voice match, then diarization
+    // Rolling PCM buffer + enrolled voice, in memory only (null when voice matching is off).
+    this.voice = voice.available() ? new voice.VoiceMatcher() : null;
+    this.segIndex = 0; // finalized segment counter for DEBUG_LABELS
     this.wallLog = []; // [{ endSec, wall }] to convert audio time to wall-clock time
     // The current suggestion (see onTheirTurnEnd). Held lines wait for release; delivered lines are
     // kept after audio_end until their estimated playback end, so a stale whisper can still be stopped.
     this.current = null;
     this.persona = DEFAULT_PERSONA;
+    // Hand-written lines first (each once per conversation), then the LLM. Memory only, per socket.
+    this.bank = new LineBank();
+    // "About me" facts the coach may state about the user. Memory only, per socket; never logged.
+    this.profile = new SessionProfile(DEFAULT_PROFILE.text);
 
     // Open TLS connections to Groq and ElevenLabs now, not on the first suggestion.
     const warmAll = () => { warmGroq(GROQ_API_KEY); warmTts(ELEVENLABS_API_KEY); };
@@ -70,6 +98,7 @@ class LiveSession {
 
     this.stt = new DeepgramStream(DEEPGRAM_API_KEY);
     this.stt.on('partial', (text, words) => {
+      forceSpeaker(words);
       // The other person kept talking after the turn we're answering: drop that suggestion (and
       // any audio still streaming) so nothing stale is whispered; their next end-of-turn re-triggers.
       // Judged by word timestamps, not arrival time, so a late interim of the user's own words
@@ -83,7 +112,7 @@ class LiveSession {
       }
       this.send({ type: 'transcript', who: this.labeler.labelPartial(words, this.audioSec), text, final: false });
     });
-    this.stt.on('committed', (text, words) => this.onCommitted(text, words));
+    this.stt.on('committed', (text, words) => this.onCommitted(text, forceSpeaker(words)));
     this.stt.on('endOfTurn', () => this.onEndOfTurn());
     this.stt.on('speechStarted', (ts) => {
       const cur = this.current;
@@ -130,6 +159,7 @@ class LiveSession {
       buf = buf.subarray(0, buf.length - 1);
     }
     if (!buf.length) return;
+    if (this.voice) this.voice.push(buf);
     this.audioBytes += buf.length;
     this.wallLog.push({ endSec: this.audioSec, wall: Date.now() });
     while (this.wallLog.length && this.wallLog[0].endSec < this.audioSec - WALL_LOG_SECS) this.wallLog.shift();
@@ -155,6 +185,9 @@ class LiveSession {
     } else if (msg.type === 'persona') {
       if (isPersona(msg.id)) this.persona = msg.id; // unknown id: keep the previous persona
       this.send({ type: 'persona_set', id: this.persona });
+    } else if (msg.type === 'profile') {
+      const chars = this.profile.set(msg.text); // null for non-strings: ignored, no reply
+      if (chars !== null) this.send({ type: 'profile_set', ok: true, chars });
     }
   }
 
@@ -171,12 +204,37 @@ class LiveSession {
       done = true;
       clearTimeout(timer);
       this.stt.off('flushed', finish);
-      const { ok, reason } = this.labeler.finishCalibration();
+      const { ok, reason } = this.finishVoiceCalibration();
       this.send(ok ? { type: 'calibrated', ok } : { type: 'calibrated', ok, reason });
     };
     const timer = setTimeout(finish, CALIB_FLUSH_TIMEOUT_MS);
     this.stt.on('flushed', finish);
     this.stt.finalize();
+  }
+
+  // Diarization calibration plus voice enrollment. With voice matching on, the amount of speech is
+  // judged on the collected enrollment audio, which is kept across failed attempts so the next
+  // attempt continues from it ("Keep talking a little longer"). Two voices still fails (and drops
+  // the collected audio). Without voice matching: the labeler's result, unchanged.
+  finishVoiceCalibration() {
+    const prevMe = this.labeler.meLabel;
+    const result = this.labeler.finishCalibration();
+    if (!this.voice) return result;
+    if (!result.ok && /more than one voice/.test(result.reason)) {
+      this.voice.resetEnrollAudio();
+      return result;
+    }
+    const secs = this.voice.enrollSeconds();
+    if (secs === 0) return result; // nothing collected: the labeler's reason ("no speech heard") stands
+    if (secs < voice.MIN_ENROLL_SECONDS) {
+      this.labeler.meLabel = prevMe; // not calibrated yet: keep what was there before
+      return { ok: false, reason: KEEP_TALKING };
+    }
+    const r = this.voice.enroll();
+    this.labeler.voiceOn = this.voice.enrolled;
+    this.labeler.floor = null;
+    if (DEBUG_LABELS) console.log(`[labels] enrolled voice: ${secs.toFixed(1)}s speech, ${r.windows} windows, ${r.ms}ms`);
+    return { ok: true };
   }
 
   // Label a final STT segment word by word (push-to-talk override, then calibrated diarization,
@@ -187,6 +245,7 @@ class LiveSession {
       const calibWords = words.filter((w) => this.labeler.inCalibration(w.start));
       if (calibWords.length) {
         this.labeler.addCalibrationWords(calibWords);
+        if (this.voice) this.voice.addEnrollWords(calibWords);
         this.send({ type: 'transcript', who: 'me', text: calibWords.map((w) => w.text.trim()).join(' '), final: true });
         words = words.filter((w) => !this.labeler.inCalibration(w.start));
         if (!words.length) return;
@@ -195,7 +254,9 @@ class LiveSession {
     let segments;
     if (words && words.length) {
       segments = [];
-      const labels = this.labeler.labelFinal(words);
+      const scoreFn = this.voice && this.voice.enrolled ? (ws) => this.voice.score(ws) : null;
+      const labels = this.labeler.labelFinal(words, scoreFn);
+      if (DEBUG_LABELS) this.logDecisions();
       for (const [i, w] of words.entries()) {
         const who = labels[i];
         const last = segments[segments.length - 1];
@@ -239,7 +300,7 @@ class LiveSession {
       ctrl, turnEnd: endSec, mode,
       held: hold, // pending and not delivered (always false with STUCK_MS = 0)
       releaseDue: !hold, released: false, dropped: false, releaseTimer: null,
-      text: null, latencyMs: null, textReadyAt: null, heldMs: 0,
+      text: null, source: null, latencyMs: null, textReadyAt: null, heldMs: 0,
       buffer: [], ttsDone: false, ttsMs: null,
       audioStarted: false, audioEnded: false, firstChunkAt: null, bytes: 0, stopped: false,
     };
@@ -252,17 +313,34 @@ class LiveSession {
       }, Math.max(0, turnEndWall + STUCK_MS - Date.now()));
     }
 
+    // Bank first (never for exit): a hit skips Groq entirely.
+    const theyAsked = this.engine.theyAskedLast();
+    const turnCount = this.engine.turns.length; // both speakers (the engine keeps at most 50)
+    const banked = this.bank.pickLine({ persona: this.persona, mode, engagement: state, theyAsked, turnCount });
     try {
-      cur.text = await writeSuggestion({
-        apiKey: GROQ_API_KEY,
-        turns: this.engine.recentTurns(CONTEXT_TURNS),
-        state,
-        mode,
-        persona: PERSONAS[this.persona].style,
-        signal: ctrl.signal,
-      });
+      if (banked) {
+        cur.text = banked;
+        cur.source = 'bank';
+      } else {
+        cur.text = await writeSuggestion({
+          apiKey: GROQ_API_KEY,
+          turns: this.engine.recentTurns(CONTEXT_TURNS),
+          state,
+          mode,
+          persona: PERSONAS[this.persona].style,
+          reasons,
+          theyAsked,
+          said: this.bank.saidLines(),
+          profile: this.profile.text,
+          turnCount,
+          signal: ctrl.signal,
+        });
+        cur.source = 'llm';
+      }
     } catch (err) {
-      if (!ctrl.signal.aborted) console.error(`[groq] ${err.message}`);
+      // Status only, never the line or transcript text.
+      if (ctrl.signal.aborted) { /* superseded */ } else if (err.code === 'INVENTED_FACT') console.warn(`[suggest] ${err.message}`);
+      else console.error(`[groq] ${err.message}`);
       clearTimeout(cur.releaseTimer);
       if (this.current === cur) this.current = null;
       return;
@@ -298,7 +376,8 @@ class LiveSession {
     cur.released = true;
     cur.held = false;
     cur.heldMs = STUCK_MS > 0 ? Math.max(0, Date.now() - cur.textReadyAt) : 0;
-    this.send({ type: 'suggestion', text: cur.text, mode: cur.mode, latencyMs: cur.latencyMs });
+    this.bank.recordSaid(cur.text);
+    this.send({ type: 'suggestion', text: cur.text, mode: cur.mode, latencyMs: cur.latencyMs, source: cur.source });
     this.send({ type: 'audio_start' });
     cur.audioStarted = true;
     for (const chunk of cur.buffer) this.sendChunk(cur, chunk);
@@ -351,9 +430,20 @@ class LiveSession {
     cur.ctrl.abort();
   }
 
+  // Numbers only: segment index, words, duration, diarization label counts, similarity, label, ms.
+  logDecisions() {
+    for (const d of this.labeler.decisions) {
+      const diar = Object.entries(d.diar).map(([k, v]) => `${k}:${v}`).join(',');
+      console.log(`[labels] seg ${++this.segIndex} at ${d.start.toFixed(2)}s words ${d.words} dur ${d.duration.toFixed(2)}s diar {${diar}}${d.collapsed ? ' collapsed' : ''}`
+        + ` sim ${d.sim === null ? '-' : d.sim.toFixed(3)} -> ${d.label} (${d.source}) embed ${d.embedMs === null ? '-' : `${d.embedMs.toFixed(0)}ms`}`);
+    }
+  }
+
   close() {
     if (this.closed) return;
     this.closed = true;
+    if (this.voice) this.voice.close(); // drop buffered audio and the enrolled embedding
+    this.voice = null;
     clearInterval(this.warmTimer);
     if (this.current) {
       clearTimeout(this.current.releaseTimer);

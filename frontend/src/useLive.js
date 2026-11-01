@@ -1,13 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { startMicCapture } from './audioCapture.js';
+import { createCaptureContext, startMicCapture } from './audioCapture.js';
 import { createPlayer } from './audioPlayer.js';
 import { createTracker } from './sessions.js';
+import { createWakeLock } from './wakeLock.js';
 
+// Same origin's /live (wss on https), proxied to the backend by the dev server; VITE_WS_URL overrides.
 const WS_URL =
   import.meta.env.VITE_WS_URL || `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/live`;
 const MAX_TRANSCRIPT = 200;
 export const CALIBRATE_MS = 8000; // user talks alone this long
 const CALIBRATED_TIMEOUT_MS = 6000; // wait this long for {type:"calibrated"} after stop
+const MIC_CHECK_MS = 2000; // how often to check the mic is still running while in a conversation
+// Haptics: a short buzz when a coach line is delivered (where navigator.vibrate exists).
+export const HAPTICS = true;
+const HAPTIC_PATTERN = [40];
 
 export const PERSONAS = [
   { id: 'founder', label: 'Founder' },
@@ -16,18 +22,22 @@ export const PERSONAS = [
   { id: 'funny', label: 'Funny' },
 ];
 
-// Close codes from the backend (see CLAUDE.md): 1011 = speech-to-text failed / missing keys.
+// Why the socket closed (see CLAUDE.md): 1011 = speech-to-text failed / missing keys.
 function closeMessage(code, reason) {
-  if (code === 1011) return `Speech-to-text stopped${reason ? ` (${reason})` : ''}. Tap Start to try again.`;
-  if (code === 1006) return 'Lost the connection to the coach. Is the backend running? Tap Start to try again.';
-  return `Connection closed${reason ? ` (${reason})` : ''}. Tap Start to try again.`;
+  if (code === 1011) return `Speech-to-text stopped${reason ? ` (${reason})` : ''}.`;
+  if (code === 1006) return 'The connection dropped.';
+  return `Connection closed${reason ? ` (${reason})` : ''}.`;
 }
 
 // Protocol: see CLAUDE.md "WebSocket protocol" (source of truth).
-// status: idle | connecting | calibrating | calibrate_failed | live | error
+// status: idle | connecting | calibrating | calibrate_failed | live | lost | error
+//   lost  = the socket closed mid-conversation; resumeConnection() reconnects and recalibrates.
+//   error = could not start at all (back on the home screen).
 export function useLive(onEnd) {
   const [status, setStatus] = useState('idle');
   const [error, setError] = useState(null);
+  const [lostReason, setLostReason] = useState(null);
+  const [micPaused, setMicPaused] = useState(false);
   const [transcript, setTranscript] = useState([]);
   const [engagement, setEngagement] = useState(null);
   const [suggestion, setSuggestion] = useState(null);
@@ -37,16 +47,26 @@ export function useLive(onEnd) {
   const [calib, setCalib] = useState({ startedAt: null, waiting: false, reason: null });
   const [persona, setPersonaState] = useState('founder'); // chosen in the UI
   const [personaSet, setPersonaSet] = useState(null); // confirmed by the server
+  const [profileAck, setProfileAck] = useState(null); // last {ok, chars, at} from profile_set
 
   const wsRef = useRef(null);
-  const stopMicRef = useRef(null);
+  const micRef = useRef(null); // { stop, isRunning, ctx }
+  const ctxRef = useRef(null); // capture AudioContext, created in the Start tap
+  const inputRef = useRef('');
   const playerRef = useRef(null);
+  const wakeRef = useRef(null);
   const trackerRef = useRef(null);
   const calibTimers = useRef([]);
   const personaRef = useRef(persona);
+  const profileRef = useRef(''); // "About you" text, sent on every new socket before calibration
+  const profileTimer = useRef(null);
+  const profileSentRef = useRef(null); // text the current socket already has (avoids duplicate sends)
+  const statusRef = useRef(status);
+  statusRef.current = status;
   const onEndRef = useRef(onEnd);
   onEndRef.current = onEnd;
   if (!playerRef.current) playerRef.current = createPlayer();
+  if (!wakeRef.current) wakeRef.current = createWakeLock();
 
   const send = useCallback((obj) => {
     const ws = wsRef.current;
@@ -60,7 +80,7 @@ export function useLive(onEnd) {
 
   const goLive = useCallback(() => {
     clearCalibTimers();
-    trackerRef.current = createTracker();
+    if (!trackerRef.current) trackerRef.current = createTracker(); // a resumed session keeps its tracker
     setStatus('live');
   }, []);
 
@@ -80,8 +100,7 @@ export function useLive(onEnd) {
       case 'transcript':
         setTranscript((prev) => {
           const last = prev[prev.length - 1];
-          // An interim line is replaced by the next interim or the final for it. The server may
-          // relabel who between interim and final, so don't require the same speaker.
+          // An interim line is replaced by the next interim or its final (the label may change).
           const base = last && !last.final ? prev.slice(0, -1) : prev;
           return [...base, { who: msg.who, text: msg.text, final: !!msg.final }].slice(-MAX_TRANSCRIPT);
         });
@@ -94,6 +113,9 @@ export function useLive(onEnd) {
         setSuggestion(msg);
         setHandled(false);
         trackerRef.current?.onSuggestion(msg.mode);
+        if (HAPTICS && typeof navigator.vibrate === 'function') {
+          try { navigator.vibrate(HAPTIC_PATTERN); } catch { /* ignore */ }
+        }
         break;
       case 'suggestion_dropped':
         setSuggestion(null);
@@ -124,6 +146,9 @@ export function useLive(onEnd) {
       case 'persona_set':
         setPersonaSet(msg.id);
         break;
+      case 'profile_set': // errors are ignored quietly; the UI keeps working
+        setProfileAck({ ok: !!msg.ok, chars: msg.chars, at: Date.now() });
+        break;
       default:
         break;
     }
@@ -142,6 +167,19 @@ export function useLive(onEnd) {
 
   const help = useCallback(() => send({ type: 'help' }), [send]);
 
+  // "About you": remembered for the next socket; if a conversation is running, resend (debounced).
+  const setProfile = useCallback((text) => {
+    profileRef.current = text;
+    clearTimeout(profileTimer.current);
+    profileTimer.current = setTimeout(() => {
+      const text = profileRef.current;
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && text !== profileSentRef.current) {
+        profileSentRef.current = text;
+        send({ type: 'profile', text });
+      }
+    }, 800);
+  }, [send]);
+
   // Calibration: the user talks alone for CALIBRATE_MS, then we ask the server for the result.
   const calibrate = useCallback(() => {
     clearCalibTimers();
@@ -158,11 +196,19 @@ export function useLive(onEnd) {
     }, CALIBRATE_MS));
   }, [send]);
 
-  // Continue without calibration: everything is "them" unless the user holds space / the button.
+  // Continue without calibration: everything is "them" unless space is held.
   const skipCalibration = useCallback(() => {
     setCalib({ startedAt: null, waiting: false, reason: null });
     goLive();
   }, [goLive]);
+
+  const startMic = useCallback(async () => {
+    if (micRef.current) await micRef.current.stop().catch(() => {});
+    micRef.current = await startMicCapture((frame) => {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(frame);
+    }, { deviceId: inputRef.current, ctx: ctxRef.current });
+  }, []);
 
   const stop = useCallback(async () => {
     clearCalibTimers();
@@ -175,20 +221,61 @@ export function useLive(onEnd) {
     const ws = wsRef.current;
     wsRef.current = null;
     if (ws) ws.close();
-    if (stopMicRef.current) {
-      const stopMic = stopMicRef.current;
-      stopMicRef.current = null;
-      await stopMic();
-    }
+    const mic = micRef.current;
+    micRef.current = null;
+    if (mic) await mic.stop().catch(() => {});
+    const ctx = ctxRef.current;
+    ctxRef.current = null;
+    if (ctx) ctx.close().catch(() => {});
+    wakeRef.current.disable();
     playerRef.current.stop();
     setSpeakerState('them');
     setCalib({ startedAt: null, waiting: false, reason: null });
+    setMicPaused(false);
+    setLostReason(null);
     setStatus('idle');
   }, []);
 
-  // Call from a click handler (needed to unlock audio playback).
+  // Open the socket; on a mid-conversation close switch to "lost" instead of ending.
+  const connect = useCallback(async () => {
+    const ws = new WebSocket(WS_URL);
+    ws.binaryType = 'arraybuffer';
+    wsRef.current = ws;
+    ws.onmessage = handleMessage;
+    ws.onclose = (ev) => {
+      if (wsRef.current !== ws) return; // closed by us
+      wsRef.current = null;
+      clearCalibTimers();
+      playerRef.current.stop();
+      setLostReason(closeMessage(ev.code, ev.reason));
+      setStatus('lost');
+    };
+    await new Promise((resolve, reject) => {
+      ws.onopen = resolve;
+      ws.onerror = () => reject(new Error(`Could not reach the coach at ${WS_URL}. Is the backend running?`));
+    });
+    ws.onerror = null;
+    ws.send(JSON.stringify({ type: 'speaker', who: 'them' }));
+    ws.send(JSON.stringify({ type: 'persona', id: personaRef.current }));
+    // Profile goes right after the socket opens and before calibration starts, exactly once; a
+    // pending "changed" resend for the old socket is cancelled.
+    clearTimeout(profileTimer.current);
+    profileSentRef.current = profileRef.current;
+    ws.send(JSON.stringify({ type: 'profile', text: profileRef.current }));
+  }, [handleMessage]);
+
+  // Call directly from the Start tap: the synchronous part unlocks audio on phones.
   const start = useCallback(async ({ inputId = '', outputId = '' } = {}) => {
+    // --- synchronous, inside the gesture ---
+    playerRef.current.unlock();
+    if (outputId) playerRef.current.setSink(outputId);
+    if (!ctxRef.current) ctxRef.current = createCaptureContext();
+    wakeRef.current.enable();
+    inputRef.current = inputId;
+    // --- async ---
     setError(null);
+    setLostReason(null);
+    setMicPaused(false);
     setStatus('connecting');
     setTranscript([]);
     setEngagement(null);
@@ -196,34 +283,10 @@ export function useLive(onEnd) {
     setHandled(false);
     setTiming(null);
     setPersonaSet(null);
-    playerRef.current.unlock();
-    if (outputId) playerRef.current.setSink(outputId);
-
+    setProfileAck(null);
     try {
-      const ws = new WebSocket(WS_URL);
-      ws.binaryType = 'arraybuffer';
-      wsRef.current = ws;
-      ws.onmessage = handleMessage;
-      ws.onclose = (ev) => {
-        if (wsRef.current === ws) {
-          const message = closeMessage(ev.code, ev.reason);
-          stop().then(() => {
-            setError(message);
-            setStatus('error');
-          });
-        }
-      };
-      await new Promise((resolve, reject) => {
-        ws.onopen = resolve;
-        ws.onerror = () => reject(new Error(`Could not reach the coach at ${WS_URL}. Is the backend running?`));
-      });
-      ws.onerror = null;
-      ws.send(JSON.stringify({ type: 'speaker', who: 'them' }));
-      ws.send(JSON.stringify({ type: 'persona', id: personaRef.current }));
-
-      stopMicRef.current = await startMicCapture((frame) => {
-        if (ws.readyState === WebSocket.OPEN) ws.send(frame);
-      }, inputId);
+      await connect();
+      await startMic();
       calibrate();
     } catch (err) {
       const denied = err && err.name === 'NotAllowedError';
@@ -235,7 +298,58 @@ export function useLive(onEnd) {
       setError(message);
       setStatus('error');
     }
-  }, [handleMessage, stop, calibrate]);
+  }, [connect, startMic, calibrate, stop]);
+
+  // "Connection lost, tap to resume": reconnect, make sure the mic runs, recalibrate.
+  const resumeConnection = useCallback(async () => {
+    const ctx = ctxRef.current;
+    const resumed = ctx && ctx.state !== 'running' ? ctx.resume().catch(() => {}) : null; // inside the tap
+    playerRef.current.unlock();
+    setStatus('connecting');
+    try {
+      await resumed;
+      await connect();
+      if (!micRef.current || !micRef.current.isRunning()) await startMic();
+      setMicPaused(false);
+      calibrate();
+    } catch (err) {
+      setLostReason(err.message || 'Still offline.');
+      setStatus('lost');
+    }
+  }, [connect, startMic, calibrate]);
+
+  // "Coaching paused, tap to resume": the browser stopped the mic while the page was hidden.
+  const resumeMic = useCallback(async () => {
+    const ctx = ctxRef.current;
+    const resumed = ctx && ctx.state !== 'running' ? ctx.resume().catch(() => {}) : null; // inside the tap
+    playerRef.current.unlock();
+    try {
+      await resumed;
+      if (!micRef.current || !micRef.current.isRunning()) await startMic();
+      setMicPaused(!micRef.current.isRunning());
+    } catch (err) {
+      setError(err && err.name === 'NotAllowedError' ? 'Microphone permission denied' : 'Could not restart the microphone');
+    }
+  }, [startMic]);
+
+  // Detect a stopped mic: on returning to the page, and periodically during a conversation.
+  useEffect(() => {
+    const active = ['calibrating', 'calibrate_failed', 'live'].includes(status);
+    if (!active) return undefined;
+    const check = () => {
+      if (document.visibilityState !== 'visible') return;
+      const mic = micRef.current;
+      if (mic && !mic.isRunning()) setMicPaused(true);
+    };
+    document.addEventListener('visibilitychange', check);
+    const id = setInterval(check, MIC_CHECK_MS);
+    return () => { document.removeEventListener('visibilitychange', check); clearInterval(id); };
+  }, [status]);
+
+  const testWhisper = useCallback((outputId) => {
+    if (outputId) playerRef.current.setSink(outputId);
+    return playerRef.current.test();
+  }, []);
 
   const getShares = useCallback(() => trackerRef.current?.shares() || null, []);
   const getStartedAt = useCallback(() => trackerRef.current?.startedAt || null, []);
@@ -245,7 +359,8 @@ export function useLive(onEnd) {
   useEffect(() => () => { stop(); }, [stop]);
 
   return {
-    status, error, transcript, engagement, suggestion, handled, timing, speaker, calib, persona, personaSet,
-    start, stop, sendSpeaker, setPersona, help, calibrate, skipCalibration, setOutputDevice, getShares, getStartedAt,
+    status, error, lostReason, micPaused, transcript, engagement, suggestion, handled, timing, speaker, calib, persona, personaSet,
+    profileAck, start, stop, sendSpeaker, setPersona, setProfile, help, calibrate, skipCalibration, resumeConnection, resumeMic, testWhisper,
+    setOutputDevice, getShares, getStartedAt,
   };
 }

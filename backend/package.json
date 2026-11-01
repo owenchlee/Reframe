@@ -9,7 +9,12 @@
     "scenario:audio-stop": "node test/audio-stop.scenario.js",
     "test:labeler": "node test/labeler.test.js",
     "scenario:diarization": "node test/diarization.scenario.js",
-    "scenario:stuck": "node test/stuck.scenario.js"
+    "scenario:stuck": "node test/stuck.scenario.js",
+    "test:lines": "node test/lines.test.js",
+    "test:invented": "node test/invented.test.js",
+    "start": "LD_LIBRARY_PATH=\"$PWD/node_modules/sherpa-onnx-linux-x64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\" node server.js",
+    "test:profile": "node test/profile.test.js",
+    "sample:profile": "node test/profile.sample.js"
   },
   "keywords": [],
   "author": "",
@@ -19,6 +24,7 @@
     "cors": "^2.8.6",
     "dotenv": "^18.0.9",
     "express": "^5.3.0",
+    "sherpa-onnx-node": "1.13.8",
     "ws": "^8.22.1"
   }
 }
