@@ -43,19 +43,34 @@ The mock (`npm run mock`) emits every message type, including calibration, held/
 and `audio_stop`. Options: `MOCK_CALIBRATE_FAIL_ONCE=1`, `MOCK_CLOSE_1011_AFTER_MS=4000`,
 `MOCK_FAST=1`, `PORT`.
 
-## On an iPhone
+## On a phone (the main way to use it)
 
-Same Wi-Fi as the laptop, open the dev server's **Network** URL in Safari, accept the
-certificate warning, then Share, then Add to Home Screen. Not tested on a device yet.
-iOS Safari cannot pick an output device, so audio goes to whatever the phone is using.
-For the demo, the laptop mic is the intended input.
+1. On the laptop: `npm run dev` (and the backend). On the phone, same Wi-Fi: open the dev server's
+   **Network** URL, accept the certificate warning. Optional: Share -> Add to Home Screen to open
+   it full screen.
+2. Plug in earbuds, tap **Test whisper** to check the sound reaches them (the phone routes audio to
+   connected earbuds; there is no output picker on phones).
+3. Tap **Start a conversation**, say a few sentences, then tap **Pocket mode** and pocket the phone.
+   Pocket mode ignores every touch; press and hold the ring for ~1.5 s to unlock. The screen stays
+   awake (Wake Lock) and the mic keeps running.
+4. If the phone stopped the mic or the connection dropped, the app says so: tap to resume.
+
+Tip: the phone mic hears you best, the earbud mic hears them best, try both. Not yet tested on a
+real phone or on iOS Safari.
+
+## About you
+
+The Start screen's **About you** box is what the coach uses to answer questions about you. It is
+prefilled from `GET /api/profile-default`; your edits stay in this browser only, and **Reset to
+default** brings the original back. It is sent to the backend as `{type:"profile", text}` when a
+conversation starts.
 
 ## What is stored
 
-Summaries only, in this browser's local storage: time, duration, seconds in each
-engagement state, talk share, number of coach lines, whether the coach suggested wrapping
-up. **No transcript text and no audio** is saved, and nothing is sent anywhere.
-"Delete history" on the report screen clears it.
+In this browser's local storage only: conversation summaries (time, duration, seconds in each
+engagement state, talk share, number of coach lines, whether the coach suggested wrapping up),
+your **About you** notes if you edited them, and your chosen audio devices and Demo view setting.
+**No transcript text and no audio** is ever saved. "Delete history" clears the summaries.
 
 ## Layout
 
@@ -63,6 +78,9 @@ up. **No transcript text and no audio** is saved, and nothing is sent anywhere.
 - `src/Ring.jsx` proportional pill ring
 - `src/useLive.js` WebSocket, mic, calibration and playback wiring (protocol in `../CLAUDE.md`)
 - `src/devices.js` input/output device pickers (only device ids are remembered)
+- `src/wakeLock.js` Screen Wake Lock with a muted-video fallback
+- `src/profile.js` About you: default fetch + this-device storage
+- `test/resampler.test.mjs` 16 kHz resampler checks (`npm test`)
 - `src/sessions.js` on-device summaries
 - `public/pcm-worklet.js` mic to 16kHz mono PCM
 - `mock/server.js` scripted stand-in for the backend

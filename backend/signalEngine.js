@@ -129,6 +129,14 @@ class SignalEngine {
     return 'reply';
   }
 
+  // Whether the other person's most recent turn contained a question (read-only getter).
+  theyAskedLast() {
+    for (let i = this.turns.length - 1; i >= 0; i--) {
+      if (this.turns[i].who === 'them') return this.turns[i].hasQuestion;
+    }
+    return false;
+  }
+
   recentTurns(n) {
     return this.turns.slice(-n).map((t) => ({ who: t.who, text: t.text }));
   }

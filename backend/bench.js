@@ -1,7 +1,9 @@
 // Latency benchmark: runs the test client against the RUNNING server N times and reports
 // p50 / worst for latencyMs and ttsMs, plus a per-stage breakdown per turn.
 //
-// Usage: node bench.js [runs=5] [--url ws://localhost:3001/live]
+// Usage: node bench.js [runs=5] [--url ws://localhost:3001/live] [--enroll]
+//   --enroll: each session first calibrates on a generated clip in the "me" voice (in memory), so
+//   voice matching (embeddings per segment) is active, as in real use.
 //
 // Stages are measured from client-side event arrival (loopback, so within a few ms):
 //   detect = their last word end -> engagement event (server's end-of-turn trigger)
@@ -11,6 +13,7 @@
 // Prints only numbers and suggestion modes, never transcript text.
 const path = require('path');
 const { runSession, loadPcm } = require('./test-client');
+const { enrollmentPcm } = require('./test/enroll');
 
 const CLIP = path.join(__dirname, 'test-clip.mp3');
 const ME = [[0.0, 2.23], [8.58, 10.76]];
@@ -19,6 +22,8 @@ const args = process.argv.slice(2);
 const runs = Number(args.find((a) => /^\d+$/.test(a)) || 5);
 const urlIdx = args.indexOf('--url');
 const url = urlIdx >= 0 ? args[urlIdx + 1] : 'ws://localhost:3001/live';
+const withEnroll = args.includes('--enroll');
+const GAP_SECS = 1.5;
 
 function analyze(events) {
   const turns = [];
@@ -28,7 +33,7 @@ function analyze(events) {
     const m = e.msg;
     if (m && m.type === 'engagement') lastEngagement = e.t;
     else if (m && m.type === 'suggestion') {
-      cur = { latencyMs: m.latencyMs, mode: m.mode, tS: e.t, tE: lastEngagement, tA: null, ttsMs: null };
+      cur = { latencyMs: m.latencyMs, mode: m.mode, source: m.source || '-', tS: e.t, tE: lastEngagement, tA: null, ttsMs: null };
       turns.push(cur);
     } else if (e.binary && cur && cur.tA === null) cur.tA = e.t;
     else if (m && m.type === 'timing' && cur) cur.ttsMs = m.ttsMs;
@@ -52,12 +57,26 @@ const worst = (xs) => {
 };
 
 (async () => {
-  const pcm = loadPcm(CLIP);
+  let pcm = loadPcm(CLIP);
+  let me = ME;
+  let controls = [];
+  if (withEnroll) {
+    const enroll = await enrollmentPcm();
+    const enrollSec = enroll.length / 32000;
+    const off = enrollSec + GAP_SECS;
+    pcm = Buffer.concat([enroll, Buffer.alloc(Math.round(GAP_SECS * 32000)), pcm]);
+    me = ME.map(([a, b]) => [a + off, b + off]);
+    controls = [
+      { at: 0, msg: { type: 'calibrate', action: 'start' } },
+      { at: enrollSec + 0.1, msg: { type: 'calibrate', action: 'stop' } },
+    ];
+    console.log(`with enrollment: ${enrollSec.toFixed(2)}s calibration clip before the conversation`);
+  }
   const all = [];
   for (let r = 1; r <= runs; r++) {
-    const turns = analyze(await runSession({ pcm, me: ME, url }));
+    const turns = analyze(await runSession({ pcm, me, url, controls }));
     turns.forEach((t, i) => all.push({ run: r, turn: i + 1, ...t }));
-    const row = turns.map((t, i) => `turn${i + 1} lat ${t.latencyMs} (detect ${t.detect} + llm ${t.llm}) tts ${t.ttsMs ?? '-'} [${t.mode}]`);
+    const row = turns.map((t, i) => `turn${i + 1} lat ${t.latencyMs} (detect ${t.detect} + llm ${t.llm}) tts ${t.ttsMs ?? '-'} [${t.mode}/${t.source}]`);
     console.log(`run ${r}: ${turns.length} suggestions  ${row.join(' | ')}`);
   }
 
@@ -71,6 +90,7 @@ const worst = (xs) => {
   };
   report('ALL TURNS', all);
   for (const turn of [...new Set(all.map((x) => x.turn))]) report(`TURN ${turn}`, all.filter((x) => x.turn === turn));
+  for (const src of [...new Set(all.map((x) => x.source))]) report(`SOURCE ${src}`, all.filter((x) => x.source === src));
   const expected = runs * 2;
   if (all.length !== expected) console.log(`\nWARNING: expected ${expected} suggestions, got ${all.length}`);
 })().catch((err) => {

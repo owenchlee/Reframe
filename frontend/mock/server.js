@@ -1,17 +1,34 @@
 // Mock of the backend /live WebSocket (protocol in ../../CLAUDE.md).
+// Also serves GET /api/profile-default and answers {type:"profile"} with profile_set.
 // Emits every server -> client message type: calibrated, persona_set, transcript (interim + final),
 // engagement, suggestion, audio_start + mp3 chunks + audio_end, timing (with heldMs), audio_stop,
 // suggestion_dropped. Incoming audio frames are only counted, never kept.
 //
 // Env: PORT (default 3001), MOCK_CALIBRATE_FAIL_ONCE=1 (first calibration returns ok:false),
-//      MOCK_FAST=1 (shorter delays, for automated walkthroughs),
+//      MOCK_FAST=1 (shorter delays, for automated walkthroughs), MOCK_PROFILE_FAIL=1 (profile-default 500),
 //      MOCK_CLOSE_1011_AFTER_MS=n (close the first connection with 1011 after n ms, like an STT failure).
+import http from 'http';
 import { WebSocketServer } from 'ws';
 import { spawnSync } from 'child_process';
 
 const PORT = Number(process.env.PORT) || 3001;
 const FAST = process.env.MOCK_FAST === '1';
-const wss = new WebSocketServer({ port: PORT, path: '/live' });
+// Default "About you" text (GET /api/profile-default), like the real backend. Made up.
+const DEFAULT_PROFILE = `I'm Alex, I work as a product designer at a small startup.
+I grew up near the coast and moved to the city three years ago.
+Into climbing, film photography and trying every ramen place in town.`;
+const server = http.createServer((req, res) => {
+  if (req.method === 'GET' && req.url === '/api/profile-default') {
+    if (process.env.MOCK_PROFILE_FAIL === '1') { res.writeHead(500); res.end(); return; }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ text: DEFAULT_PROFILE }));
+    return;
+  }
+  res.writeHead(404);
+  res.end();
+});
+const wss = new WebSocketServer({ server, path: '/live' });
+server.listen(PORT);
 const PERSONAS = ['founder', 'charmer', 'listener', 'funny'];
 
 // A short soft tone as mp3, generated in memory (stands in for the coach's whisper).
@@ -128,7 +145,12 @@ wss.on('connection', (ws) => {
     let msg;
     try { msg = JSON.parse(data.toString()); } catch { return; }
     if (msg.type === 'speaker') console.log('speaker ->', msg.who);
-    else if (msg.type === 'persona') {
+    else if (msg.type === 'profile') {
+      // Only the length is logged, never the text.
+      const text = typeof msg.text === 'string' ? msg.text : '';
+      console.log(`profile -> ${text.length} chars (${calibrating ? 'during calibration' : started ? 'during conversation' : 'before calibration'})`);
+      ws.send(JSON.stringify({ type: 'profile_set', ok: text.length <= 2000, chars: text.length }));
+    } else if (msg.type === 'persona') {
       if (PERSONAS.includes(msg.id)) persona = msg.id;
       console.log('persona ->', msg.id, '(in effect:', persona + ')');
       ws.send(JSON.stringify({ type: 'persona_set', id: persona }));
@@ -163,4 +185,4 @@ wss.on('connection', (ws) => {
   });
 });
 
-console.log(`mock /live listening on ws://localhost:${PORT}/live`);
+console.log(`mock listening on http://localhost:${PORT} (ws /live, GET /api/profile-default)`);

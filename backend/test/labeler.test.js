@@ -75,6 +75,63 @@ const cases = [
     l.setPtt('me', 0);
     assert.deepStrictEqual(l.labelFinal(W([[0.2, 1], [0.5, 1]])), ['me', 'me']);
   }],
+  // ---- voice matching (fake scorer: similarity chosen per test) ----
+  ['voice: high similarity -> "me", low -> "them", regardless of diarization', () => {
+    const l = new SpeakerLabeler();
+    l.meLabel = 0;
+    l.voiceOn = true;
+    // 1.25s segments (5 words), all diarized as the user's label 0
+    const seg = (t) => W([[t, 0], [t + 0.25, 0], [t + 0.5, 0], [t + 0.75, 0], [t + 1.0, 0]]);
+    assert.deepStrictEqual(l.labelFinal(seg(0), () => ({ sim: 0.8, ms: 1 })), Array(5).fill('me'));
+    assert.deepStrictEqual(l.labelFinal(seg(3), () => ({ sim: 0.1, ms: 1 })), Array(5).fill('them'));
+    assert.strictEqual(l.decisions[0].source, 'voice');
+    assert.strictEqual(l.decisions[0].sim, 0.1);
+  }],
+  ['voice: short segments get no vote; in-between uses diarization when it is working', () => {
+    const l = new SpeakerLabeler();
+    l.meLabel = 0;
+    l.voiceOn = true;
+    l.recentSpeakers = [0, 0, 0, 1, 1, 1]; // diarization has seen two voices
+    let called = 0;
+    const score = () => { called++; return { sim: 0.5, ms: 1 }; };
+    l.labelFinal(W([[0, 1], [0.25, 1], [0.5, 1], [0.75, 1], [1.0, 1]]), score); // them by diar (in-between)
+    assert.strictEqual(l.decisions[0].source, 'diar');
+    assert.deepStrictEqual(l.labelFinal(W([[3, 0], [3.25, 0]]), score), ['me', 'me'], 'short: diarization');
+    assert.strictEqual(called, 1);
+    assert.strictEqual(l.decisions[0].sim, null);
+  }],
+  ['voice: collapsed diarization -> in-between and short segments are "them"', () => {
+    const l = new SpeakerLabeler();
+    l.meLabel = 0;
+    l.voiceOn = true;
+    const seg = (t) => W([[t, 0], [t + 0.25, 0], [t + 0.5, 0], [t + 0.75, 0], [t + 1.0, 0]]);
+    assert.deepStrictEqual(l.labelFinal(seg(0), () => ({ sim: 0.9, ms: 1 })), Array(5).fill('me'));
+    assert.deepStrictEqual(l.labelFinal(seg(3), () => ({ sim: 0.5, ms: 1 })), Array(5).fill('them'), 'in-between');
+    assert.strictEqual(l.decisions[0].source, 'collapsed');
+    assert.deepStrictEqual(l.labelFinal(W([[6, 0], [6.25, 0]]), () => ({ sim: 0.9, ms: 1 })), ['them', 'them'], 'short');
+    assert.strictEqual(l.rawWho({ start: 9, speaker: 0 }), 'them');
+  }],
+  ['voice: collapsed, the user continuing after a short pause stays "me"', () => {
+    const l = new SpeakerLabeler();
+    l.meLabel = 0;
+    l.voiceOn = true;
+    l.labelFinal(W([[0, 0], [0.25, 0], [0.5, 0], [0.75, 0], [1.0, 0]]), () => ({ sim: 0.9, ms: 1 })); // ends 1.25
+    // 0.4s later, a short bit: continuity
+    assert.deepStrictEqual(l.labelFinal(W([[1.65, 0], [1.9, 0]]), () => ({ sim: 0.5, ms: 1 })), ['me', 'me']);
+    assert.strictEqual(l.decisions[0].source, 'continuity');
+  }],
+  ['voice: push-to-talk still overrides a low similarity', () => {
+    const l = new SpeakerLabeler();
+    l.meLabel = 0;
+    l.voiceOn = true;
+    l.setPtt('me', 0);
+    assert.deepStrictEqual(l.labelFinal(W([[0.2, 1], [0.5, 1], [0.8, 1], [1.1, 1]]), () => ({ sim: 0.0, ms: 1 })), Array(4).fill('me'));
+  }],
+  ['no scorer (voice off): collapsed diarization keeps the original behavior', () => {
+    const l = new SpeakerLabeler();
+    l.meLabel = 0;
+    assert.deepStrictEqual(l.labelFinal(W([[0, 0], [0.25, 0], [0.5, 0], [0.75, 0], [1.0, 0]])), Array(5).fill('me'));
+  }],
 ];
 
 let failed = 0;
