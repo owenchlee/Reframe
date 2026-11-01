@@ -30,7 +30,10 @@ const DROP_MIN_GAP_MS = 300;
 // door, music) can also trigger it and drop a line the user actually needed (they can press help).
 // false = drop only on transcribed words or the talk key: robust to noise, but words arrive ~1s
 // after speech starts, so an answer that begins late in the hold may come after the release.
-const DROP_ON_VAD = true;
+const DROP_ON_VAD = false; // off: a cough/breath/noise must not cancel the whisper the user is waiting for
+// Filler sounds don't count as "someone answered" (the user stuck on "um..." still needs the line).
+const FILLER = /^(um+|uh+|uhh+|erm?|hm+|mm+|ah+|oh+|hmm+|huh)$/i;
+const isReal = (w) => !FILLER.test(String(w.text || '').replace(/[^\w]/g, ''));
 const BYTES_PER_SEC = SAMPLE_RATE * 2; // 16-bit mono PCM
 const CONTEXT_TURNS = 6; // turns sent to Groq
 const WARM_EVERY_MS = 1000; // check often; httpClient only warms a host after it has been idle ~4s
@@ -104,7 +107,7 @@ class LiveSession {
       // Judged by word timestamps, not arrival time, so a late interim of the user's own words
       // can't cancel a whisper.
       const cur = this.current;
-      const fresh = (w) => !this.labeler.inCalibration(w.start);
+      const fresh = (w) => !this.labeler.inCalibration(w.start) && isReal(w);
       if (cur && words.some((w) => w.start > cur.turnEnd && fresh(w) && this.labeler.rawWho(w) === 'them')) {
         this.cancelCurrent();
       } else if (cur && cur.held && words.some((w) => fresh(w) && w.start >= cur.turnEnd + DROP_MIN_GAP_MS / 1000)) {
@@ -237,6 +240,31 @@ class LiveSession {
     return { ok: true };
   }
 
+  // No setup step: the first person to speak after Start is the user. Their diarization label becomes
+  // "me", and their speech (kept in the conversation) is collected to enroll their voice once there
+  // is enough. Skipped when explicit calibration has run. Memory only.
+  autoEnroll(words) {
+    const lb = this.labeler;
+    if (lb.calibrated && !this.autoMe) return; // explicit calibration owns the "me" label
+    if (this.autoDone) return;
+    if (lb.meLabel === null) {
+      const first = words.find((w) => w.speaker !== undefined && w.speaker !== null);
+      if (!first) return;
+      lb.meLabel = first.speaker;
+      this.autoMe = true;
+    }
+    if (!this.voice) { this.autoDone = true; return; }
+    const mine = words.filter((w) => w.speaker === lb.meLabel && !lb.pttAt(w.start));
+    if (mine.length) this.voice.addEnrollWords(mine);
+    if (this.voice.enrollSeconds() >= voice.MIN_ENROLL_SECONDS) {
+      const r = this.voice.enroll();
+      lb.voiceOn = this.voice.enrolled;
+      lb.floor = null;
+      this.autoDone = true;
+      if (DEBUG_LABELS) console.log(`[labels] auto-enrolled voice: ${r.windows} windows, ${r.ms}ms`);
+    }
+  }
+
   // Label a final STT segment word by word (push-to-talk override, then calibrated diarization,
   // smoothed so a turn keeps one owner), then update the engine. Calibration speech is shown as
   // "me" but never enters the conversation.
@@ -251,6 +279,7 @@ class LiveSession {
         if (!words.length) return;
       }
     }
+    if (words && words.length) this.autoEnroll(words);
     let segments;
     if (words && words.length) {
       segments = [];

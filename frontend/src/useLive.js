@@ -287,7 +287,7 @@ export function useLive(onEnd) {
     try {
       await connect();
       await startMic();
-      calibrate();
+      goLive(); // straight into the conversation; voice enrollment happens quietly
     } catch (err) {
       const denied = err && err.name === 'NotAllowedError';
       const missing = err && (err.name === 'NotFoundError' || err.name === 'OverconstrainedError');
@@ -298,7 +298,7 @@ export function useLive(onEnd) {
       setError(message);
       setStatus('error');
     }
-  }, [connect, startMic, calibrate, stop]);
+  }, [connect, startMic, goLive, stop]);
 
   // "Connection lost, tap to resume": reconnect, make sure the mic runs, recalibrate.
   const resumeConnection = useCallback(async () => {
@@ -311,12 +311,12 @@ export function useLive(onEnd) {
       await connect();
       if (!micRef.current || !micRef.current.isRunning()) await startMic();
       setMicPaused(false);
-      calibrate();
+      goLive();
     } catch (err) {
       setLostReason(err.message || 'Still offline.');
       setStatus('lost');
     }
-  }, [connect, startMic, calibrate]);
+  }, [connect, startMic, goLive]);
 
   // "Coaching paused, tap to resume": the browser stopped the mic while the page was hidden.
   const resumeMic = useCallback(async () => {
