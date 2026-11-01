@@ -21,7 +21,7 @@ function arc(a0, a1) {
 }
 
 // Pill-segmented ring sized by each state's share of the conversation.
-export default function Ring({ shares, children, label }) {
+export default function Ring({ shares, children, label, className = '' }) {
   const sum = shares ? STATES.reduce((a, k) => a + shares[k], 0) : 0;
   let cursor = 0;
   const pills = [];
@@ -36,14 +36,14 @@ export default function Ring({ shares, children, label }) {
     }
   }
   return (
-    <div className="ring-wrap" role="img" aria-label={label}>
+    <div className={`ring-wrap ${className}`} role="img" aria-label={label}>
       <svg viewBox="0 0 240 240" className="ring" aria-hidden="true">
         {pills.length === 0 && <circle cx="120" cy="120" r={R} className="ring-empty" />}
         {pills.map((p) => (
           <path key={p.key} d={p.d} stroke={COLORS[p.key]} className="pill-arc" />
         ))}
       </svg>
-      <div className="ring-center">{children}</div>
+      {children && <div className="ring-center">{children}</div>}
     </div>
   );
 }

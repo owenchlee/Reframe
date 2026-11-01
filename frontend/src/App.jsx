@@ -147,22 +147,6 @@ function Report({ sessions, range, setRange, onClear }) {
   );
 }
 
-// Optional override: the server labels who is talking; this (or holding space) forces "me".
-function TalkOverride({ speaker, onChange }) {
-  const me = speaker === 'me';
-  return (
-    <button
-      className={`hold small ${me ? 'on' : ''}`}
-      aria-pressed={me}
-      onClick={() => onChange(me ? 'them' : 'me')}
-      onContextMenu={(e) => e.preventDefault()}
-      title="Optional: the coach detects who is talking. Hold space or tap to force it."
-    >
-      {me ? 'Marked as you · tap to release' : "Mark: I'm talking (or hold space)"}
-    </button>
-  );
-}
-
 function Calibration({ live }) {
   const { calib, status } = live;
   const [, tick] = useState(0);
@@ -176,8 +160,7 @@ function Calibration({ live }) {
       <section className="calib">
         <p className="calib-title">Couldn't learn your voice</p>
         <p className="calib-text">{calib.reason}</p>
-        <button className="primary start" onClick={live.calibrate}>Try again</button>
-        <button className="text-btn" onClick={live.skipCalibration}>Skip and hold space while I talk</button>
+        <button className="primary start calib-retry" onClick={live.calibrate}>Try again</button>
       </section>
     );
   }
@@ -186,16 +169,14 @@ function Calibration({ live }) {
   const left = Math.max(0, Math.ceil((CALIBRATE_MS - elapsed) / 1000));
   return (
     <section className="calib" aria-live="polite">
-      <p className="calib-title">{calib.waiting ? 'Checking your voice…' : 'Say a few sentences on your own'}</p>
+      <p className="calib-title">{calib.waiting ? 'Checking your voice…' : 'Say a few sentences about your day'}</p>
       <p className="calib-text">
-        {calib.waiting
-          ? 'One moment.'
-          : 'Just you talking, about anything, so the coach can tell your voice from theirs.'}
+        {calib.waiting ? 'One moment.' : 'Just you, talking normally, so the coach can tell your voice from theirs.'}
       </p>
       <div className="progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(pct)}>
         <span style={{ width: `${pct}%` }} />
       </div>
-      {!calib.waiting && <p className="calib-count">{left}s</p>}
+      <p className="calib-count">{calib.waiting ? '\u00a0' : `${left}s`}</p>
     </section>
   );
 }
@@ -217,115 +198,148 @@ function DevicePicker({ devices, inputId, outputId, setInputId, setOutputId, onU
   const warn = labeled && inputLooksLikeEarbuds(inputs, outputs, inputId, outputId);
   const name = (d, i, kind) => d.label || `${kind} ${i + 1}`;
   const short = (id, list) => (id && list.find((d) => d.deviceId === id)?.label) || 'System default';
-  return (
-    <details className="devices-wrap" open={warn || undefined}>
-      <summary>
-        Audio: <b>{short(inputId, inputs)}</b> in · <b>{canPickOutput() ? short(outputId, outputs) : 'system output'}</b> out
-      </summary>
-    <div className="devices">
-      <label>
-        <span>Listen with</span>
-        <select value={inputId} onChange={(e) => setInputId(e.target.value)}>
-          <option value="">System default</option>
-          {inputs.filter((d) => d.deviceId !== 'default' && d.deviceId !== 'communications').map((d, i) => (
-            <option key={d.deviceId} value={d.deviceId}>{name(d, i, 'Microphone')}</option>
-          ))}
-        </select>
-      </label>
-      {canPickOutput() && (
-        <label>
-          <span>Whisper to</span>
-          <select value={outputId} onChange={(e) => setOutputId(e.target.value)}>
-            <option value="">System default</option>
-            {outputs.filter((d) => d.deviceId !== 'default' && d.deviceId !== 'communications').map((d, i) => (
-              <option key={d.deviceId} value={d.deviceId}>{name(d, i, 'Output')}</option>
-            ))}
-          </select>
-        </label>
-      )}
-      {!labeled && <button className="text-btn small" onClick={onUnlock}>Show device names</button>}
-      {warn && (
-        <p className="warn" role="alert">
-          That mic looks like your earbuds. Earbud mics drop to call quality and add lag: listen with the laptop mic.
-        </p>
-      )}
-    </div>
-    </details>
-  );
-}
-
-function LiveScreen({ live, now }) {
-  if (live.status === 'calibrating' || live.status === 'calibrate_failed') return <Calibration live={live} />;
-  const startedAt = live.getStartedAt();
-  const shares = live.getShares();
-  const sum = shares ? STATES.reduce((a, k) => a + shares[k], 0) : 0;
-  const pct = sum > 0 ? toPercents(shares) : null;
-  const elapsed = startedAt ? (now - startedAt) / 1000 : 0;
-  const connecting = live.status === 'connecting';
+  const real = (d) => d.deviceId !== 'default' && d.deviceId !== 'communications';
   return (
     <>
-      <Ring shares={pct ? shares : null} label="Conversation in progress">
-        <div className="hero">{connecting ? '…' : fmtClock(elapsed)}</div>
-        <div className="hero-sub">
-          {connecting ? 'connecting' : `listening · ${PERSONAS.find((p) => p.id === live.personaSet)?.label || 'coach'} is in your earbuds`}
+      <details className="devices-wrap">
+        <summary>
+          <span>Audio settings</span>
+          <span className="devices-now">{short(inputId, inputs)} → {canPickOutput() ? short(outputId, outputs) : 'system output'}</span>
+        </summary>
+        <div className="devices">
+          <label>
+            <span>Listen with (laptop mic)</span>
+            <select value={inputId} onChange={(e) => setInputId(e.target.value)}>
+              <option value="">System default</option>
+              {inputs.filter(real).map((d, i) => <option key={d.deviceId} value={d.deviceId}>{name(d, i, 'Microphone')}</option>)}
+            </select>
+          </label>
+          {canPickOutput() && (
+            <label>
+              <span>Whisper to (earbuds)</span>
+              <select value={outputId} onChange={(e) => setOutputId(e.target.value)}>
+                <option value="">System default</option>
+                {outputs.filter(real).map((d, i) => <option key={d.deviceId} value={d.deviceId}>{name(d, i, 'Output')}</option>)}
+              </select>
+            </label>
+          )}
+          {!labeled && <button className="text-btn small" onClick={onUnlock}>Show device names</button>}
         </div>
-      </Ring>
-      <Legend rows={stateRows(pct)} />
-      {!connecting && (
-        <div className="live-controls">
-          <TalkOverride speaker={live.speaker} onChange={live.sendSpeaker} />
-          <button className="help-btn" onClick={live.help} title="Whisper the line now instead of waiting">Help me</button>
-        </div>
+      </details>
+      {warn && (
+        <p className="warn" role="alert">
+          Your mic looks like your earbuds. Earbud mics drop to call quality and add lag: pick the laptop mic in Audio settings.
+        </p>
       )}
     </>
   );
 }
 
-function DemoPanel({ live }) {
-  const { suggestion, timing, engagement, transcript, handled } = live;
-  const ms = timing?.latencyMs ?? suggestion?.latencyMs;
-  const slow = typeof ms === 'number' && ms > LATENCY_TARGET_MS;
-  const linesRef = useRef(null);
-  useEffect(() => {
-    if (linesRef.current) linesRef.current.scrollTop = linesRef.current.scrollHeight;
-  }, [transcript]);
-  return (
-    <section className="demo">
-      <h2>Demo view</h2>
-      <div className={`say ${suggestion?.mode || ''}`}>
-        {suggestion && <span className={`badge ${suggestion.mode}`}>{MODE_LABEL[suggestion.mode] || suggestion.mode}</span>}
-        <p className={`say-text ${handled && !suggestion ? 'handled' : ''}`}>
-          {suggestion ? suggestion.text : handled ? 'You handled it' : 'Waiting for the conversation…'}
-        </p>
-      </div>
-      <Legend
-        rows={[
-          { label: 'Reading', color: `var(--${engagement?.state || 'muted'})`, value: engagement ? LABEL[engagement.state] : '—' },
-          { label: 'You talk', color: 'var(--accent)', value: typeof engagement?.talkRatio === 'number' ? `${Math.round(engagement.talkRatio * 100)}%` : '—' },
-          { label: 'Latency', color: slow ? 'var(--danger)' : 'var(--engaged)', value: typeof ms === 'number' ? `${Math.round(ms)} ms` : '—' },
-          {
-            label: timing?.heldMs ? 'Voice / held' : 'Voice',
-            color: 'var(--muted)',
-            value: typeof timing?.ttsMs === 'number'
-              ? `${Math.round(timing.ttsMs)}${timing.heldMs ? ` / ${Math.round(timing.heldMs)}` : ''} ms`
-              : '—',
-          },
-        ]}
-      />
-      {engagement?.reasons?.length > 0 && (
-        <div className="chips">
-          {engagement.reasons.map((r, i) => <span className="chip" key={i}>{r}</span>)}
+// The coach line is the product: large, with a mode chip and a soft replace animation.
+function CoachLine({ suggestion, handled, connecting }) {
+  if (suggestion) {
+    return (
+      <section className={`coach ${suggestion.mode}`} aria-live="polite">
+        <div className="coach-card" key={`${suggestion.text}|${suggestion.latencyMs}`}>
+          <span className={`badge ${suggestion.mode}`}>{MODE_LABEL[suggestion.mode] || suggestion.mode}</span>
+          <p className="coach-text">{suggestion.text}</p>
         </div>
-      )}
-      <div className="lines" ref={linesRef} aria-label="Live transcript, not saved">
-        {transcript.length === 0 && <p className="empty">Transcript appears here. It isn't saved.</p>}
-        {transcript.map((l, i) => (
-          <p key={i} className={`line ${l.who} ${l.final ? '' : 'partial'}`}>
-            <b>{l.who === 'me' ? 'You' : 'Them'}</b> {l.text}
-          </p>
-        ))}
+      </section>
+    );
+  }
+  const idle = connecting ? 'Connecting…' : handled ? 'You handled it' : 'Listening…';
+  return (
+    <section className="coach idle" aria-live="polite">
+      <div className="coach-card" key={idle}>
+        <p className="coach-text muted">{idle}</p>
+        {!connecting && !handled && <p className="coach-hint">The coach whispers a line if you get stuck.</p>}
       </div>
     </section>
+  );
+}
+
+function EngagementRow({ engagement, shares }) {
+  const sum = shares ? STATES.reduce((a, k) => a + shares[k], 0) : 0;
+  const state = engagement?.state;
+  return (
+    <section className="eng-row" aria-label="How engaged they are">
+      <Ring shares={sum > 0 ? shares : null} label="Engagement so far" className="mini" />
+      <div className="eng-text">
+        <span className={`eng-state ${state || ''}`}>{state ? LABEL[state] : 'Reading the room'}</span>
+        <span className="eng-sub">
+          {typeof engagement?.talkRatio === 'number' ? `You've talked ${Math.round(engagement.talkRatio * 100)}%` : 'they haven\'t said much yet'}
+        </span>
+      </div>
+    </section>
+  );
+}
+
+// The only scrolling region. Follows new lines unless the user has scrolled up to read.
+function Transcript({ lines }) {
+  const ref = useRef(null);
+  const stick = useRef(true);
+  const onScroll = () => {
+    const el = ref.current;
+    if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  };
+  useEffect(() => {
+    const el = ref.current;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
+  }, [lines]);
+  return (
+    <section className="transcript" ref={ref} onScroll={onScroll} aria-label="Live transcript, not saved">
+      {lines.length === 0 && <p className="empty">The conversation appears here. It isn't saved.</p>}
+      {lines.map((l, i) => (
+        <p key={i} className={`tline ${l.who} ${l.final ? '' : 'partial'}`}>
+          <span className="who">{l.who === 'me' ? 'You' : 'Them'}</span>
+          <span className="txt">{l.text}</span>
+        </p>
+      ))}
+    </section>
+  );
+}
+
+function Metrics({ timing, suggestion }) {
+  const ms = timing?.latencyMs ?? suggestion?.latencyMs;
+  const slow = typeof ms === 'number' && ms > LATENCY_TARGET_MS;
+  const f = (v) => (typeof v === 'number' ? `${Math.round(v)} ms` : '—');
+  return (
+    <footer className="metrics" aria-label="Demo timings">
+      <span>Latency <b className={slow ? 'slow' : ''}>{f(ms)}</b></span>
+      <span>Voice <b>{f(timing?.ttsMs)}</b></span>
+      <span>Held <b>{f(timing?.heldMs)}</b></span>
+    </footer>
+  );
+}
+
+function LiveView({ live, now, demo }) {
+  const startedAt = live.getStartedAt();
+  // `now` ticks once a second, so it can be slightly older than startedAt right after going live.
+  const elapsed = startedAt ? Math.max(0, (now - startedAt) / 1000) : 0;
+  const connecting = live.status === 'connecting';
+  const calibrating = live.status === 'calibrating' || live.status === 'calibrate_failed';
+  const persona = PERSONAS.find((p) => p.id === (live.personaSet || live.persona))?.label;
+  return (
+    <>
+      <header className="live-head">
+        <div className="lh-info">
+          <span className="lh-dot" aria-hidden="true" />
+          <span className="lh-timer">{calibrating ? 'Setting up' : connecting ? '…' : fmtClock(elapsed)}</span>
+          {persona && <span className="lh-persona">{persona}</span>}
+        </div>
+        <button className="end-btn" onClick={live.stop}>End</button>
+      </header>
+      {calibrating ? (
+        <Calibration live={live} />
+      ) : (
+        <>
+          <CoachLine suggestion={live.suggestion} handled={live.handled} connecting={connecting} />
+          <EngagementRow engagement={live.engagement} shares={live.getShares()} />
+          <Transcript lines={live.transcript} />
+          {demo && <Metrics timing={live.timing} suggestion={live.suggestion} />}
+        </>
+      )}
+    </>
   );
 }
 
@@ -373,7 +387,7 @@ export default function App() {
     setDemo((d) => { writeFlag('reframe.demo', !d); return !d; });
   };
 
-  // Laptop demo: hold space to mark "me" speaking.
+  // Undocumented keyboard shortcut: hold space to force "me" (labels normally come from the server).
   useEffect(() => {
     if (live.status !== 'live') return undefined;
     const skip = (t) => t && /^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(t.tagName);
@@ -389,30 +403,33 @@ export default function App() {
   return (
     <>
     <div className="blobs" aria-hidden="true"><div className="grp g1"><i className="blob b1" /><i className="blob b2" /></div><div className="grp g2"><i className="blob b3" /><i className="blob b4" /></div></div>
-    <main className="app">
-      <header>
-        <div>
-          <h1>{inSession ? 'In conversation' : 'Reframe'}</h1>
-          <p className="date">{today}</p>
-        </div>
-        <button className={`switch ${demo ? 'on' : ''}`} role="switch" aria-checked={demo} onClick={toggleDemo}>
-          <span className="knob" />
-          <span className="switch-label">Demo view</span>
-        </button>
-      </header>
+    {inSession ? (
+      <main className="app live">
+        <LiveView live={live} now={now} demo={demo} />
+      </main>
+    ) : (
+      <main className="app home">
+        <header>
+          <div>
+            <h1>Reframe</h1>
+            <p className="date">{today}</p>
+          </div>
+          <button className={`switch ${demo ? 'on' : ''}`} role="switch" aria-checked={demo} onClick={toggleDemo}>
+            <span className="knob" />
+            <span className="switch-label">Demo view</span>
+          </button>
+        </header>
 
-      {live.error && <div className="error" role="alert">{live.error}</div>}
+        {live.error && <div className="error" role="alert">{live.error}</div>}
 
-      {inSession ? (
-        <LiveScreen live={live} now={now} />
-      ) : (
-        <>
-          <Report
-            sessions={sessions}
-            range={range}
-            setRange={setRange}
-            onClear={() => { clearSessions(); setSessions([]); }}
-          />
+        <Report
+          sessions={sessions}
+          range={range}
+          setRange={setRange}
+          onClear={() => { clearSessions(); setSessions([]); }}
+        />
+
+        <div className="action">
           <section className="setup" aria-label="Before you start">
             <PersonaPicker value={live.persona} onChange={live.setPersona} />
             <DevicePicker
@@ -424,19 +441,10 @@ export default function App() {
               onUnlock={unlock}
             />
           </section>
-        </>
-      )}
-
-      {demo && <DemoPanel live={live} />}
-
-      <div className="action">
-        {inSession ? (
-          <button className="primary stop" onClick={live.stop}>End conversation</button>
-        ) : (
           <button className="primary start" onClick={startConversation}>Start a conversation</button>
-        )}
-      </div>
-    </main>
+        </div>
+      </main>
+    )}
     </>
   );
 }

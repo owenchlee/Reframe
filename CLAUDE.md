@@ -109,6 +109,13 @@ suggestion, the latency number, and the exit line when the friend plays someone 
   (self-signed cert; `/live` is proxied to `ws://localhost:3001`). `npm run build` for a production build.
   No keys? `cd frontend && npm run mock` serves a scripted `/live` on port 3001 (stop the backend first).
   `VITE_WS_URL` points the page at another backend; `NO_SSL=1` serves plain http.
+- Frontend flow (2026-11-01, hands-free): home = report + persona picker + collapsed Audio settings +
+  Start. One tap on Start connects and calibrates automatically (~8s, retry on failure), then the live
+  screen: pinned header (timer, persona, End), large coach line with mode chip, compact engagement
+  row, transcript as the only scroll region, timings footer only in Demo view. No on-screen talk or
+  help buttons; holding space still sends `speaker` as an undocumented shortcut. `help` is not sent
+  from the UI anymore (the protocol message still exists). Layout checked at 390x844, 1366x768,
+  1920x1080: no page scroll, nothing clipped.
 
 ## Status
 Backend verified end to end with real keys. `node bench.js 8` on `test-clip.mp3` (2026-11-01):
@@ -129,9 +136,10 @@ latencyMs p50 965 / worst 1679, ttsMs p50 193 / worst 1146 (15 of 16 turns withi
   `persona_set` (server -> client), `heldMs` in timing; `suggestion` only on delivery
 - [x] Stuck detector (hold 1500ms, release / drop / help) and personas: `npm run scenario:stuck` passes
 - [x] Frontend (2026-11-01): calibration step, persona picker, input/output device pickers with an
-  earbud-mic warning, optional talk override + hold space, help button, live transcript (interim/final),
+  earbud-mic warning, hold-space shortcut, live transcript (interim/final),
   engagement, delivered suggestion, timing (latency/tts/held), audio_start/end/stop, suggestion_dropped,
   1011/close handling with restart without reload. Verified against the mock in headless Chrome.
 - [x] Frontend mic capture (laptop mic, 16kHz PCM): input picker defaults to a built-in mic
 - [ ] Frontend earbud playback (`setSinkId`): built, needs a manual test with real earbuds
+- [x] Frontend hands-free live layout (2026-11-01): auto-calibration, coach line, transcript-only scroll
 - [x] UI: engagement meter + latency number

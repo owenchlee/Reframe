@@ -28,20 +28,20 @@ Set `VITE_WS_URL` to point at a different backend.
 
 ## Use it
 
-1. Pick a coach style (Founder, Charmer, Listener, Funny). Under **Audio**, pick the laptop mic
-   to listen with and your earbuds to whisper to (remembered; the app warns if the mic looks like
-   the earbuds).
-2. Click **Start a conversation**, allow the microphone, then talk on your own for ~8 seconds so
-   the coach learns your voice. If it fails, **Try again** (or skip and use the space bar).
-3. Talk normally: the backend labels who is speaking. **Mark: I'm talking** (or holding SPACE)
-   is an optional override. **Help me** whispers a held line right away instead of waiting.
-4. **End conversation** saves a summary to the report.
+1. Pick a coach style (Founder, Charmer, Listener, Funny). **Audio settings** (collapsed) picks the
+   laptop mic to listen with and your earbuds to whisper to; the choice is remembered, and a
+   warning appears only if the mic looks like the earbuds.
+2. Tap **Start a conversation** once and allow the microphone. Calibration starts by itself:
+   say a few sentences about your day (~8 s). If it fails, the reason is shown with **Try again**.
+3. Then just talk. It is hands-free: the backend labels who is speaking and the coach whispers a
+   line only if you get stuck. The live screen shows the coach line large, a small engagement
+   reading and the transcript (the only part that scrolls). **End** is the only control.
+4. **Demo view** (home screen switch, remembered) adds latency, voice and held timings in a small
+   footer on the live screen.
 
 The mock (`npm run mock`) emits every message type, including calibration, held/dropped lines
 and `audio_stop`. Options: `MOCK_CALIBRATE_FAIL_ONCE=1`, `MOCK_CLOSE_1011_AFTER_MS=4000`,
 `MOCK_FAST=1`, `PORT`.
-4. Switch on **Demo view** (top right) to show the live suggestion, engagement reading,
-   latency, voice time and transcript. The setting is remembered.
 
 ## On an iPhone
 
@@ -59,7 +59,7 @@ up. **No transcript text and no audio** is saved, and nothing is sent anywhere.
 
 ## Layout
 
-- `src/App.jsx` report, live and demo screens
+- `src/App.jsx` home (report + setup) and live screens (calibration, coach line, transcript)
 - `src/Ring.jsx` proportional pill ring
 - `src/useLive.js` WebSocket, mic, calibration and playback wiring (protocol in `../CLAUDE.md`)
 - `src/devices.js` input/output device pickers (only device ids are remembered)
