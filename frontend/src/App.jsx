@@ -145,15 +145,15 @@ function Report({ sessions, range, setRange, onClear }) {
 }
 
 function HoldToTalk({ speaker, onChange }) {
+  const me = speaker === 'me';
   return (
     <button
-      className={`hold ${speaker === 'me' ? 'on' : ''}`}
-      onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); onChange('me'); }}
-      onPointerUp={() => onChange('them')}
-      onPointerCancel={() => onChange('them')}
+      className={`hold ${me ? 'on' : ''}`}
+      aria-pressed={me}
+      onClick={() => onChange(me ? 'them' : 'me')}
       onContextMenu={(e) => e.preventDefault()}
     >
-      {speaker === 'me' ? 'You are talking…' : 'Hold while you talk'}
+      {me ? 'You are talking · tap when done' : 'Tap when you start talking'}
     </button>
   );
 }
@@ -250,6 +250,8 @@ export default function App() {
   const today = new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
 
   return (
+    <>
+    <div className="blobs" aria-hidden="true"><div className="grp g1"><i className="blob b1" /><i className="blob b2" /></div><div className="grp g2"><i className="blob b3" /><i className="blob b4" /></div></div>
     <main className="app">
       <header>
         <div>
@@ -285,5 +287,6 @@ export default function App() {
         )}
       </div>
     </main>
+    </>
   );
 }

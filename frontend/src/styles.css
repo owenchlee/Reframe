@@ -95,35 +95,23 @@ h2 { margin: 0 0 8px; font-size: 1.05rem; font-weight: 600; }
 
 /* Grainy gradient blobs, clipped to the phone-width column */
 body::before, body::after { content: ''; position: fixed; top: 0; bottom: 0; left: 50%; width: min(100vw, 520px); transform: translateX(-50%); z-index: 0; pointer-events: none; -webkit-mask-image: linear-gradient(to right, transparent, #000 16%, #000 84%, transparent); mask-image: linear-gradient(to right, transparent, #000 16%, #000 84%, transparent); }
-@property --ax { syntax: '<percentage>'; inherits: false; initial-value: 66%; }
-@property --ay { syntax: '<percentage>'; inherits: false; initial-value: 9%; }
-@property --bx { syntax: '<percentage>'; inherits: false; initial-value: 68%; }
-@property --by { syntax: '<percentage>'; inherits: false; initial-value: 7%; }
-@property --cx { syntax: '<percentage>'; inherits: false; initial-value: 34%; }
-@property --cy { syntax: '<percentage>'; inherits: false; initial-value: 96%; }
-@property --dx { syntax: '<percentage>'; inherits: false; initial-value: 32%; }
-@property --dy { syntax: '<percentage>'; inherits: false; initial-value: 98%; }
-body::before {
-  background:
-    radial-gradient(ellipse 34% 12% at var(--ax) var(--ay), rgba(255,200,232,.55) 0%, rgba(255,150,205,.4) 45%, transparent 100%),
-    radial-gradient(ellipse 50% 20% at var(--bx) var(--by), #ff5a8a 0%, #ff3d9a 45%, rgba(255,61,154,.25) 75%, transparent 100%),
-    radial-gradient(ellipse 30% 9% at var(--cx) var(--cy), rgba(255,200,232,.5) 0%, rgba(255,150,205,.35) 50%, transparent 100%),
-    radial-gradient(ellipse 44% 15% at var(--dx) var(--dy), #ff6a7a 0%, #ff3d9a 50%, rgba(255,61,154,.2) 78%, transparent 100%);
-  opacity: .9;
-  animation: lava-a 9s ease-in-out infinite alternate, lava-b 13s ease-in-out infinite alternate, lava-c 15s ease-in-out infinite alternate, lava-d 11s ease-in-out infinite alternate; }
-@keyframes lava-a { 0% { --ax: 50%; --ay: 4%; } 50% { --ax: 84%; --ay: 30%; } 100% { --ax: 44%; --ay: 52%; } }
-@keyframes lava-b { 0% { --bx: 80%; --by: 6%; } 50% { --bx: 46%; --by: 38%; } 100% { --bx: 74%; --by: 20%; } }
-@keyframes lava-c { 0% { --cx: 50%; --cy: 98%; } 50% { --cx: 20%; --cy: 66%; } 100% { --cx: 56%; --cy: 48%; } }
-@keyframes lava-d { 0% { --dx: 20%; --dy: 100%; } 50% { --dx: 56%; --dy: 74%; } 100% { --dx: 34%; --dy: 90%; } }
-@media (prefers-reduced-motion: reduce) { body::before { animation: none; } }
-body::after { content: ''; position: fixed; top: 0; bottom: 0; left: 50%; width: min(100vw, 520px); transform: translateX(-50%); z-index: 0; pointer-events: none; -webkit-mask-image: linear-gradient(to right, transparent, #000 16%, #000 84%, transparent); mask-image: linear-gradient(to right, transparent, #000 16%, #000 84%, transparent); }
-body::before {
-  background:
-    radial-gradient(ellipse 34% 12% at 66% 9%, rgba(255,200,232,.55) 0%, rgba(255,150,205,.4) 45%, transparent 100%),
-    radial-gradient(ellipse 50% 20% at 68% 7%, #ff5a8a 0%, #ff3d9a 45%, rgba(255,61,154,.25) 75%, transparent 100%),
-    radial-gradient(ellipse 30% 9% at 34% 96%, rgba(255,200,232,.5) 0%, rgba(255,150,205,.35) 50%, transparent 100%),
-    radial-gradient(ellipse 44% 15% at 32% 98%, #ff6a7a 0%, #ff3d9a 50%, rgba(255,61,154,.2) 78%, transparent 100%);
-  opacity: .9; }
+body::before { content: none; }
+.blobs { position: fixed; top: 0; bottom: 0; left: 50%; width: min(100vw, 520px); transform: translateX(-50%); overflow: hidden; z-index: 0; pointer-events: none;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 14%, #000 86%, transparent); mask-image: linear-gradient(to right, transparent, #000 14%, #000 86%, transparent); }
+.blob { position: absolute; border-radius: 50%; filter: blur(22px); will-change: transform; }
+.b1 { width: 62%; aspect-ratio: 1.5; top: -8%; right: 2%; background: radial-gradient(closest-side, #ff5a8a, #ff3d9a 50%, rgba(255,61,154,0)); animation: wob1 22s ease-in-out infinite alternate; }
+.b2 { width: 34%; aspect-ratio: 1.4; top: 0; right: 24%; background: radial-gradient(closest-side, rgba(255,215,240,.75), rgba(255,150,205,.35) 55%, rgba(255,150,205,0)); animation: wob2 26s ease-in-out infinite alternate; }
+.b3 { width: 58%; aspect-ratio: 1.6; bottom: -10%; left: 4%; background: radial-gradient(closest-side, #ff6a7a, #ff3d9a 50%, rgba(255,61,154,0)); animation: wob1 24s ease-in-out infinite alternate; }
+.b4 { width: 30%; aspect-ratio: 1.4; bottom: -2%; left: 30%; background: radial-gradient(closest-side, rgba(255,215,240,.7), rgba(255,150,205,.3) 55%, rgba(255,150,205,0)); animation: wob2 20s ease-in-out infinite alternate; }
+/* Each pair drifts together as one lava-lamp blob, slowly, within its half of the screen */
+.grp { position: absolute; inset: 0; }
+.g1 { animation: drift1 38s ease-in-out infinite alternate; }
+.g2 { animation: drift2 44s ease-in-out infinite alternate; }
+@keyframes drift1 { 0% { transform: translate(6%, 0); } 100% { transform: translate(-10%, 26%); } }
+@keyframes drift2 { 0% { transform: translate(-6%, 0); } 100% { transform: translate(12%, -24%); } }
+@keyframes wob1 { 0% { transform: scale(1); } 100% { transform: translate(-6%, 8%) scale(1.15); } }
+@keyframes wob2 { 0% { transform: translate(8%, 0) scale(1); } 100% { transform: translate(-14%, 14%) scale(1.2); } }
+@media (prefers-reduced-motion: reduce) { .blob, .grp { animation: none; } }
 body::after { background-image: var(--grain); mix-blend-mode: overlay; opacity: .55; }
 .app { position: relative; z-index: 1; }
 .action { z-index: 2; background: linear-gradient(to top, rgba(0,0,0,.92) 60%, transparent); }
