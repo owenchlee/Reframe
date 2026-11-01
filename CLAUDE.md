@@ -16,8 +16,8 @@ when they're not interested.
 - Demo is a roleplay with a friend who knows it's a demo.
 
 ## Stack
-- `backend/`: Node + Express (CommonJS), `ws` (WebSocket), dotenv. Port 3001.
-  multer is not used in the live design; the backend dev removes it with `npm uninstall multer`.
+- `backend/`: Node + Express (CommonJS), `ws` (WebSocket), dotenv. Port 3001. (multer removed.)
+  Files: `server.js`, `scribe.js`, `signalEngine.js`, `suggest.js` (Gemini), `tts.js`, `test-client.js`.
 - `frontend/`: React (owned by the frontend dev; tooling TBD, document here once chosen).
 - Live transcription: ElevenLabs Scribe realtime speech-to-text.
 - Suggestion LLM: Google Gemini (a fast flash model).
@@ -66,20 +66,20 @@ suggestion, the latency number, and the exit line when the friend plays someone 
 - Before pushing: `git pull --rebase origin main`. Small, frequent commits.
 
 ## How to run
-- Backend: `cd backend && npm install && node server.js`
+- Backend: `cd backend && npm install && node server.js` (optional `ELEVENLABS_VOICE_ID` in `.env`)
+- Test without frontend: `node test-client.js <audio-file> [--me 4-7.5,12-15] [--play]`
 - Frontend: TBD once set up.
 
 ## Status
-Repo today: `backend/` has only `package.json` + lockfile. `server.js` doesn't exist yet,
-and `ws` isn't installed yet (deps are express, cors, dotenv, multer, the last left over
-from the earlier upload design). `frontend/` is empty.
+Backend items are written; only error paths are verified so far (no `backend/.env` yet).
+Run an end-to-end test with real keys before relying on them. `frontend/` is empty.
 
-- [ ] WebSocket server (`/live` on port 3001)
-- [ ] Scribe realtime streaming
-- [ ] Signal engine
-- [ ] Gemini suggestions
-- [ ] TTS streaming
-- [ ] Test client
+- [x] WebSocket server (`/live` on port 3001)
+- [x] Scribe realtime streaming (needs real-key test)
+- [x] Signal engine
+- [x] Gemini suggestions (needs real-key test)
+- [x] TTS streaming (needs real-key test)
+- [x] Test client
 - [ ] Frontend mic capture (laptop mic, 16kHz PCM)
 - [ ] Frontend earbud playback (`setSinkId`)
 - [ ] UI: engagement meter + latency number
