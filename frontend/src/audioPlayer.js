@@ -4,6 +4,7 @@ export function createPlayer() {
   const el = new Audio();
   let chunks = [];
   let sinkId = '';
+  let gen = 0; // bumped by stop() so an in-flight end() can bail out
 
   async function applySink() {
     if (sinkId && typeof el.setSinkId === 'function') {
@@ -36,7 +37,13 @@ export function createPlayer() {
       if (!chunks.length) return;
       const url = URL.createObjectURL(new Blob(chunks, { type: 'audio/mpeg' }));
       chunks = [];
+      const myGen = ++gen;
       await applySink();
+      // A stop() during the await above cancels this playback.
+      if (myGen !== gen) {
+        URL.revokeObjectURL(url);
+        return;
+      }
       el.src = url;
       el.onended = () => URL.revokeObjectURL(url);
       try {
@@ -45,9 +52,11 @@ export function createPlayer() {
         console.warn('playback blocked', err.name);
       }
     },
+    // Stop immediately and drop queued chunks. No-op when nothing is playing or queued.
     stop() {
-      el.pause();
+      gen++;
       chunks = [];
+      if (!el.paused) el.pause();
     },
   };
 }

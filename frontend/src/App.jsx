@@ -140,7 +140,6 @@ function Report({ sessions, range, setRange, onClear }) {
           {confirm ? 'Tap again to delete everything' : 'Delete history from this phone'}
         </button>
       )}
-      <p className="privacy">Only summaries are kept, on this phone. No audio or words are saved.</p>
     </>
   );
 }

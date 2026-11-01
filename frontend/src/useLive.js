@@ -63,6 +63,9 @@ export function useLive(onEnd) {
       case 'audio_end':
         player.end();
         break;
+      case 'audio_stop':
+        player.stop();
+        break;
       default:
         break;
     }
