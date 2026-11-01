@@ -32,8 +32,14 @@ function testTone() {
   return wavBlob(out, rate);
 }
 
+// Whispers play a bit faster so they finish sooner (pitch is preserved).
+const WHISPER_SPEED = 1.25;
+
 export function createPlayer() {
   const el = new Audio();
+  el.defaultPlaybackRate = WHISPER_SPEED; // survives setting a new src
+  el.playbackRate = WHISPER_SPEED;
+  el.preservesPitch = true;
   let chunks = [];
   let sinkId = '';
   let gen = 0; // bumped by stop() so an in-flight end() can bail out
