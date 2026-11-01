@@ -21,10 +21,13 @@ when they're not interested.
   `httpClient.js` (keep-alive pool), `test-client.js`, `make-test-clip.js`, `bench.js` (latency),
   `test/` (engine tests: `npm run test:engine`).
   Also `speakerLabeler.js` (me/them labeling), `npm run test:labeler`, `npm run scenario:diarization`.
+  Also `personas.js` (persona style briefs), `npm run scenario:stuck` (stuck detector + personas).
 - `frontend/`: React (owned by the frontend dev; tooling TBD, document here once chosen).
   On `audio_stop` the client must stop playback immediately and drop any queued mp3 chunks.
   When the user presses Start, run a calibration step (`calibrate` start, user talks alone for
   ~5-10s, `calibrate` stop, show the `calibrated` result). The space bar becomes an optional override.
+  Suggestions now arrive only when delivered (stuck detector). Handle `suggestion_dropped` (e.g. show
+  "you handled it"). Send `{type:"persona"}` from the Start screen. Optional "help" button sends `{type:"help"}`.
 - Live transcription: Deepgram Nova-3 live streaming speech-to-text.
 - Suggestion LLM: Groq (OpenAI-compatible chat completions, fast small instruct model).
 - Voice out: ElevenLabs TTS, lowest-latency model, streamed mp3.
@@ -37,18 +40,31 @@ Client → server:
 - `{type:"speaker", who:"me"|"them"}`: sent on talk-key press/release (hold space = `me`; default `them`).
 - `{type:"calibrate", action:"start"|"stop"}`: while calibrating the user talks alone; their voice's
   diarization label becomes `me`. Speaker messages still override diarization while held.
+- `{type:"help"}`: release a held suggestion immediately (as soon as its text is ready); ignored if none is held.
+- `{type:"persona", id:"founder"|"charmer"|"listener"|"funny"}`: any time, default `founder`. Unknown id
+  keeps the previous persona. Style only; `exit` mode ignores the persona (polite exit always wins).
 
 Server → client:
 - `{type:"transcript", who:"me"|"them", text, final}`
 - `{type:"engagement", state:"engaged"|"neutral"|"cold", talkRatio, reasons:[...]}`
 - `{type:"suggestion", text, mode:"ask"|"reply"|"exit", latencyMs}`
+  Stuck detector: sent only when a line is actually delivered (right before its audio_start). latencyMs
+  is unchanged: their last word end -> text ready (not including any hold).
 - `{type:"audio_start"}`, then binary mp3 chunks, then `{type:"audio_end"}`
 - `{type:"timing", latencyMs, ttsMs}`
+  Also carries `heldMs`: how long the ready line was held before release (0 when not held). ttsMs is
+  text ready -> first mp3 chunk received from TTS.
 - `{type:"audio_stop"}`: the whisper being played is stale (they resumed talking, or the user
   pressed the talk key). Stop playback now, discard its queued chunks. Terminal for that suggestion:
   no further audio_end/timing. May also arrive after audio_end while the whisper is still playing.
 - `{type:"calibrated", ok:boolean, reason?:string}`: reply to calibrate stop. `ok:false` if no/too little
   speech or more than one voice. Uncalibrated sessions label everything `them` unless space is held.
+- `{type:"suggestion_dropped", mode}`: a held line was discarded because someone started speaking
+  during the hold (or the talk key was pressed, or a newer turn replaced it). No audio follows.
+- `{type:"persona_set", id}`: reply to `persona`, with the persona now in effect.
+
+Stuck detector: after the other person's turn the line is generated and its audio buffered in memory,
+but only delivered if nobody starts speaking within `REFRAME_STUCK_MS` (default 1500) of their last word.
 
 Latency target: end of the other person's turn → suggestion text ready in **under 1.5s**. The UI shows
 the measured latency on screen. Keep this section updated whenever a message shape changes.
@@ -84,6 +100,8 @@ suggestion, the latency number, and the exit line when the friend plays someone 
 ## How to run
 - Backend: `cd backend && npm install && node server.js` (optional `ELEVENLABS_VOICE_ID` in `.env`)
 - Test without frontend: `node test-client.js <audio-file> [--me 4-7.5,12-15] [--play]`
+- Optional env (not secrets): `REFRAME_STUCK_MS` (hold before whispering, default 1500; 0 = play at once,
+  use 0 for bench.js and the older scenarios), `PORT` (default 3001).
 - Frontend: TBD once set up.
 
 ## Status
@@ -101,6 +119,9 @@ latencyMs p50 965 / worst 1679, ttsMs p50 193 / worst 1146 (15 of 16 turns withi
 - [x] Protocol change (2026-11-01): added `calibrate` (client -> server) and `calibrated` (server -> client)
 - [x] Speaker diarization + calibration (Stage A): 100% word labels on test-clip.mp3, 3 runs, no latency cost
 - [ ] Voiceprint (Stage B, Picovoice Eagle): not built, PICOVOICE_ACCESS_KEY not set
+- [x] Protocol change (2026-11-01): added `help`, `persona` (client -> server), `suggestion_dropped`,
+  `persona_set` (server -> client), `heldMs` in timing; `suggestion` only on delivery
+- [x] Stuck detector (hold 1500ms, release / drop / help) and personas: `npm run scenario:stuck` passes
 - [ ] Frontend mic capture (laptop mic, 16kHz PCM)
 - [ ] Frontend earbud playback (`setSinkId`)
 - [ ] UI: engagement meter + latency number

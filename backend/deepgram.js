@@ -4,7 +4,7 @@
 // Never logs audio or transcript text.
 //
 // Events: 'ready', 'partial'(text, words[{start,end,speaker}]), 'committed'(text, words[{text,start,end,speaker}]),
-//         'flushed' (reply to finalize()),
+//         'flushed' (reply to finalize()), 'speechStarted'(timestampSec),
 //         'endOfTurn'(lastWordEndSec), 'upstreamError'(msg), 'warning'(msg), 'error'(err), 'close'(code)
 const { EventEmitter } = require('events');
 const WebSocket = require('ws');
@@ -38,6 +38,8 @@ class DeepgramStream extends EventEmitter {
       // Streaming diarization: each word gets an integer `speaker` (no confidence on streaming).
       // Indexes stayed stable for the whole stream in testing (docs don't promise it).
       diarize_model: 'latest',
+      // SpeechStarted events (stream-seconds timestamp, ~0.1-0.3s after onset): used by the stuck detector.
+      vad_events: 'true',
     });
     this.pending = [];
     this.pendingBytes = 0;
@@ -104,6 +106,8 @@ class DeepgramStream extends EventEmitter {
       if (msg.from_finalize) this.emit('flushed');
       const trailingSilenceMs = (msg.start + msg.duration - this.lastWordEnd) * 1000;
       if (msg.speech_final || (this.turnOpen && trailingSilenceMs >= TRAILING_SILENCE_END_MS)) this._endTurn(this.lastWordEnd);
+    } else if (msg.type === 'SpeechStarted') {
+      this.emit('speechStarted', msg.timestamp);
     } else if (msg.type === 'UtteranceEnd') {
       // Only fires the turn end if speech_final didn't already.
       this._endTurn(msg.last_word_end);

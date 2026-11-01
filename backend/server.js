@@ -11,8 +11,23 @@ const { SignalEngine } = require('./signalEngine');
 const { SpeakerLabeler } = require('./speakerLabeler');
 const { writeSuggestion, warmGroq } = require('./suggest');
 const { streamSpeech, warmTts, MP3_BYTES_PER_SEC } = require('./tts');
+const { PERSONAS, DEFAULT_PERSONA, isPersona } = require('./personas');
 
 const PORT = Number(process.env.PORT) || 3001; // PORT override is for running tests beside a dev server
+// Stuck detector: the whisper is held (generated + buffered in memory) and only played if nobody
+// has started speaking this long after the other person's last word. 0 = no hold, play at once.
+const STUCK_MS = process.env.REFRAME_STUCK_MS !== undefined && process.env.REFRAME_STUCK_MS !== ''
+  ? Math.max(0, Number(process.env.REFRAME_STUCK_MS) || 0)
+  : 1500;
+// Drop sensitivity. New speech must start at least this long after their last word to count as
+// "someone answered" (Deepgram also reports SpeechStarted inside the tail of their own last word).
+const DROP_MIN_GAP_MS = 300;
+// Use Deepgram's SpeechStarted (VAD) to drop a held line. Tradeoff: it fires ~0.1-0.3s after speech
+// starts, so the user answering is caught quickly, but any loud non-speech sound (cough, laugh,
+// door, music) can also trigger it and drop a line the user actually needed (they can press help).
+// false = drop only on transcribed words or the talk key: robust to noise, but words arrive ~1s
+// after speech starts, so an answer that begins late in the hold may come after the release.
+const DROP_ON_VAD = true;
 const BYTES_PER_SEC = SAMPLE_RATE * 2; // 16-bit mono PCM
 const CONTEXT_TURNS = 6; // turns sent to Groq
 const WARM_EVERY_MS = 1000; // check often; httpClient only warms a host after it has been idle ~4s
@@ -43,9 +58,10 @@ class LiveSession {
     this.carry = null; // odd trailing byte from a frame, kept to stay sample-aligned
     this.labeler = new SpeakerLabeler(); // me/them: push-to-talk override, then calibrated diarization
     this.wallLog = []; // [{ endSec, wall }] to convert audio time to wall-clock time
-    // The current suggestion: { ctrl, turnEnd, audioStarted, audioEnded, firstChunkAt, bytes, stopped }.
-    // Kept after audio_end until its estimated playback end, so a stale whisper can still be stopped.
+    // The current suggestion (see onTheirTurnEnd). Held lines wait for release; delivered lines are
+    // kept after audio_end until their estimated playback end, so a stale whisper can still be stopped.
     this.current = null;
+    this.persona = DEFAULT_PERSONA;
 
     // Open TLS connections to Groq and ElevenLabs now, not on the first suggestion.
     const warmAll = () => { warmGroq(GROQ_API_KEY); warmTts(ELEVENLABS_API_KEY); };
@@ -59,13 +75,23 @@ class LiveSession {
       // Judged by word timestamps, not arrival time, so a late interim of the user's own words
       // can't cancel a whisper.
       const cur = this.current;
-      if (cur && words.some((w) => w.start > cur.turnEnd && !this.labeler.inCalibration(w.start) && this.labeler.rawWho(w) === 'them')) {
+      const fresh = (w) => !this.labeler.inCalibration(w.start);
+      if (cur && words.some((w) => w.start > cur.turnEnd && fresh(w) && this.labeler.rawWho(w) === 'them')) {
         this.cancelCurrent();
+      } else if (cur && cur.held && words.some((w) => fresh(w) && w.start >= cur.turnEnd + DROP_MIN_GAP_MS / 1000)) {
+        this.cancelCurrent(); // anyone started speaking during the hold
       }
       this.send({ type: 'transcript', who: this.labeler.labelPartial(words, this.audioSec), text, final: false });
     });
     this.stt.on('committed', (text, words) => this.onCommitted(text, words));
     this.stt.on('endOfTurn', () => this.onEndOfTurn());
+    this.stt.on('speechStarted', (ts) => {
+      const cur = this.current;
+      if (DROP_ON_VAD && cur && cur.held && typeof ts === 'number' && !this.labeler.inCalibration(ts)
+        && ts >= cur.turnEnd + DROP_MIN_GAP_MS / 1000) {
+        this.cancelCurrent();
+      }
+    });
     this.stt.on('upstreamError', (msg) => console.error(`[deepgram] ${msg}`));
     this.stt.on('warning', (msg) => console.warn(`[deepgram] ${msg}`));
     this.stt.on('error', (err) => {
@@ -119,6 +145,16 @@ class LiveSession {
       this.labeler.startCalibration(this.audioSec);
     } else if (msg.type === 'calibrate' && msg.action === 'stop') {
       this.finishCalibration();
+    } else if (msg.type === 'help') {
+      // Release a held line now; ignored if none is held.
+      const cur = this.current;
+      if (cur && cur.held) {
+        cur.releaseDue = true;
+        this.tryRelease(cur);
+      }
+    } else if (msg.type === 'persona') {
+      if (isPersona(msg.id)) this.persona = msg.id; // unknown id: keep the previous persona
+      this.send({ type: 'persona_set', id: this.persona });
     }
   }
 
@@ -195,47 +231,94 @@ class LiveSession {
     this.send({ type: 'engagement', state, talkRatio, reasons });
     const mode = this.engine.mode(state, talkRatio);
 
-    // A newer turn supersedes any suggestion still being written or spoken.
+    // A newer turn supersedes any suggestion still being written, held or spoken.
     this.cancelCurrent();
     const ctrl = new AbortController();
-    const cur = { ctrl, turnEnd: endSec, audioStarted: false, audioEnded: false, firstChunkAt: null, bytes: 0, stopped: false };
+    const hold = STUCK_MS > 0;
+    const cur = {
+      ctrl, turnEnd: endSec, mode,
+      held: hold, // pending and not delivered (always false with STUCK_MS = 0)
+      releaseDue: !hold, released: false, dropped: false, releaseTimer: null,
+      text: null, latencyMs: null, textReadyAt: null, heldMs: 0,
+      buffer: [], ttsDone: false, ttsMs: null,
+      audioStarted: false, audioEnded: false, firstChunkAt: null, bytes: 0, stopped: false,
+    };
     this.current = cur;
+    if (hold) {
+      // Release once STUCK_MS has passed since their last word, if nobody has spoken by then.
+      cur.releaseTimer = setTimeout(() => {
+        cur.releaseDue = true;
+        this.tryRelease(cur);
+      }, Math.max(0, turnEndWall + STUCK_MS - Date.now()));
+    }
 
-    let text;
     try {
-      text = await writeSuggestion({
-        apiKey: GROQ_API_KEY, turns: this.engine.recentTurns(CONTEXT_TURNS), state, mode, signal: ctrl.signal,
+      cur.text = await writeSuggestion({
+        apiKey: GROQ_API_KEY,
+        turns: this.engine.recentTurns(CONTEXT_TURNS),
+        state,
+        mode,
+        persona: PERSONAS[this.persona].style,
+        signal: ctrl.signal,
       });
     } catch (err) {
       if (!ctrl.signal.aborted) console.error(`[groq] ${err.message}`);
+      clearTimeout(cur.releaseTimer);
+      if (this.current === cur) this.current = null;
       return;
     }
     if (ctrl.signal.aborted) return;
-    const latencyMs = Math.round(Date.now() - turnEndWall);
-    this.send({ type: 'suggestion', text, mode, latencyMs });
+    cur.textReadyAt = Date.now();
+    cur.latencyMs = Math.round(cur.textReadyAt - turnEndWall); // last word end -> text ready
+    this.tryRelease(cur);
 
-    // ttsMs = suggestion text ready -> first mp3 chunk sent (what the user waits to hear).
-    const ttsStart = Date.now();
-    let ttsMs = null;
-    this.send({ type: 'audio_start' });
-    cur.audioStarted = true;
+    // TTS starts right away even while held; chunks are buffered in memory until release.
+    // ttsMs = suggestion text ready -> first mp3 chunk received (= sent, when not held).
     try {
-      for await (const chunk of streamSpeech({ apiKey: ELEVENLABS_API_KEY, voiceId: ELEVENLABS_VOICE_ID, text, signal: ctrl.signal })) {
-        // Checked right before every send: once audio_stop went out, no chunk can follow it.
-        if (cur.stopped || ctrl.signal.aborted) break;
-        if (ttsMs === null) ttsMs = Date.now() - ttsStart;
-        if (cur.firstChunkAt === null) cur.firstChunkAt = Date.now();
-        cur.bytes += chunk.length;
-        this.sendBinary(chunk);
+      for await (const chunk of streamSpeech({ apiKey: ELEVENLABS_API_KEY, voiceId: ELEVENLABS_VOICE_ID, text: cur.text, signal: ctrl.signal })) {
+        // Checked right before every send: once audio_stop or a drop happened, no chunk can follow.
+        if (cur.stopped || cur.dropped || ctrl.signal.aborted) break;
+        if (cur.ttsMs === null) cur.ttsMs = Date.now() - cur.textReadyAt;
+        if (cur.released) this.sendChunk(cur, chunk);
+        else cur.buffer.push(chunk);
       }
     } catch (err) {
       if (!ctrl.signal.aborted) console.error(`[tts] ${err.message}`);
     }
-    if (cur.stopped) return; // audio_stop is terminal: no audio_end, no timing
+    if (cur.stopped || cur.dropped) return; // audio_stop / suggestion_dropped are terminal
+    cur.ttsDone = true;
+    if (cur.released) this.finishAudio(cur);
+    if (ctrl.signal.aborted && this.current === cur) this.current = null;
+  }
+
+  // Deliver a line once its release is due (timer, help, or no hold) and its text is ready.
+  tryRelease(cur) {
+    if (cur !== this.current || cur.released || cur.dropped || !cur.releaseDue || cur.text === null) return;
+    clearTimeout(cur.releaseTimer);
+    cur.released = true;
+    cur.held = false;
+    cur.heldMs = STUCK_MS > 0 ? Math.max(0, Date.now() - cur.textReadyAt) : 0;
+    this.send({ type: 'suggestion', text: cur.text, mode: cur.mode, latencyMs: cur.latencyMs });
+    this.send({ type: 'audio_start' });
+    cur.audioStarted = true;
+    for (const chunk of cur.buffer) this.sendChunk(cur, chunk);
+    cur.buffer = [];
+    if (cur.ttsDone) this.finishAudio(cur);
+  }
+
+  sendChunk(cur, chunk) {
+    if (cur.firstChunkAt === null) cur.firstChunkAt = Date.now();
+    cur.bytes += chunk.length;
+    this.sendBinary(chunk);
+  }
+
+  finishAudio(cur) {
+    if (cur.stopped || cur.audioEnded) return;
     this.send({ type: 'audio_end' });
     cur.audioEnded = true;
-    if (!ctrl.signal.aborted && ttsMs !== null) this.send({ type: 'timing', latencyMs, ttsMs });
-    if (ctrl.signal.aborted && this.current === cur) this.current = null;
+    if (!cur.ctrl.signal.aborted && cur.ttsMs !== null) {
+      this.send({ type: 'timing', latencyMs: cur.latencyMs, ttsMs: cur.ttsMs, heldMs: cur.heldMs });
+    }
   }
 
   // Estimated wall time when the client finishes playing the current whisper.
@@ -244,17 +327,26 @@ class LiveSession {
     return cur.firstChunkAt + (cur.bytes / MP3_BYTES_PER_SEC) * 1000 + PLAYBACK_SLACK_MS;
   }
 
-  // Cancel the current suggestion. If its whisper has started and may still be playing (audio
-  // still streaming, or within its estimated playback time), tell the client with audio_stop.
-  // If nothing was sent yet (still in Groq / before audio_start), cancel silently.
+  // Cancel the current suggestion.
+  // - Held (not delivered yet): discard it and its buffered audio, tell the client suggestion_dropped.
+  // - Delivered and possibly still playing: audio_stop.
+  // - Otherwise (no hold and nothing sent yet, or playback finished): cancel silently.
   cancelCurrent() {
     const cur = this.current;
     if (!cur) return;
     this.current = null;
-    const playing = cur.audioStarted && !cur.stopped && (!cur.audioEnded || Date.now() < this.playbackEndsAt(cur));
-    if (playing) {
-      cur.stopped = true; // set before anything else so the TTS loop sends no further chunks
-      this.send({ type: 'audio_stop' });
+    clearTimeout(cur.releaseTimer);
+    if (cur.held && !cur.released) {
+      cur.dropped = true;
+      cur.held = false;
+      cur.buffer = [];
+      this.send({ type: 'suggestion_dropped', mode: cur.mode });
+    } else {
+      const playing = cur.audioStarted && !cur.stopped && (!cur.audioEnded || Date.now() < this.playbackEndsAt(cur));
+      if (playing) {
+        cur.stopped = true; // set before anything else so the TTS loop sends no further chunks
+        this.send({ type: 'audio_stop' });
+      }
     }
     cur.ctrl.abort();
   }
@@ -263,7 +355,11 @@ class LiveSession {
     if (this.closed) return;
     this.closed = true;
     clearInterval(this.warmTimer);
-    if (this.current) this.current.ctrl.abort();
+    if (this.current) {
+      clearTimeout(this.current.releaseTimer);
+      this.current.buffer = [];
+      this.current.ctrl.abort();
+    }
     this.stt.close();
   }
 }
@@ -286,4 +382,4 @@ wss.on('connection', (client) => {
   client.on('error', () => session.close());
 });
 
-server.listen(PORT, () => console.log(`[reframe] listening on http://localhost:${PORT} (ws: /live)`));
+server.listen(PORT, () => console.log(`[reframe] listening on http://localhost:${PORT} (ws: /live), stuck hold ${STUCK_MS}ms`));

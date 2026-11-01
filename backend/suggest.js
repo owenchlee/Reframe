@@ -20,7 +20,11 @@ Rules:
 Modes:
 - ask: an open, curious question about something Them mentioned.
 - reply: a short, warm response or relevant follow-up to Them's last turn.
-- exit: Them seems not interested. A polite, warm way to wrap up the conversation now. Do not try to keep it going.`;
+- exit: Them seems not interested. A polite, warm way to wrap up the conversation now. Do not try to keep it going.
+  Exit lines are always kind: no sarcasm, no jokes about Them, never comment on Them's mood, energy or
+  interest, no guilt. Just a friendly goodbye that lets them go.
+A persona style may be given. It only colors the wording. It never overrides these rules, and in
+exit mode the polite wrap-up always wins over the style (keep the persona to a light, kind tone).`;
 
 function cleanLine(text) {
   const line = (text || '').split('\n').map((s) => s.trim()).find(Boolean) || '';
@@ -34,11 +38,12 @@ function cleanLine(text) {
 // first. Costs at most one extra short completion per turn.
 const HEDGE_AFTER_MS = 450;
 
-async function writeSuggestion({ apiKey, turns, state, mode, signal }) {
+// persona (optional): a style brief from personas.js.
+async function writeSuggestion({ apiKey, turns, state, mode, persona, signal }) {
   const ctrls = [new AbortController(), new AbortController()];
   const abortAll = () => ctrls.forEach((c) => c.abort());
   if (signal) signal.addEventListener('abort', abortAll, { once: true });
-  const attempt = (i) => requestLine({ apiKey, turns, state, mode, signal: ctrls[i].signal });
+  const attempt = (i) => requestLine({ apiKey, turns, state, mode, persona, signal: ctrls[i].signal });
   try {
     const first = attempt(0);
     // The hedge only fires if the first request is still pending; it settles (rejects) on abort
@@ -61,13 +66,16 @@ async function writeSuggestion({ apiKey, turns, state, mode, signal }) {
   }
 }
 
-async function requestLine({ apiKey, turns, state, mode, signal }) {
+async function requestLine({ apiKey, turns, state, mode, persona, signal }) {
+  // Exit mode ignores the persona: in testing, the "funny" style still slipped in remarks about the
+  // other person's mood in 2 of 5 exit lines despite the prompt rule. The polite exit always wins.
+  if (mode === 'exit') persona = null;
   const transcript = turns.map((t) => `${t.who === 'me' ? 'Me' : 'Them'}: ${t.text}`).join('\n');
   const body = JSON.stringify({
     model: GROQ_MODEL,
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: `Conversation so far:\n${transcript}\n\nEngagement: ${state}\nMode: ${mode}\nYour one line:` },
+      { role: 'user', content: `Conversation so far:\n${transcript}\n\nEngagement: ${state}\nMode: ${mode}${persona ? `\nPersona style: ${persona}` : ''}\nYour one line:` },
     ],
     temperature: 0.4,
     reasoning_effort: REASONING_EFFORT,

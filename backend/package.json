@@ -8,7 +8,8 @@
     "test:engine": "node test/engine.test.js",
     "scenario:audio-stop": "node test/audio-stop.scenario.js",
     "test:labeler": "node test/labeler.test.js",
-    "scenario:diarization": "node test/diarization.scenario.js"
+    "scenario:diarization": "node test/diarization.scenario.js",
+    "scenario:stuck": "node test/stuck.scenario.js"
   },
   "keywords": [],
   "author": "",

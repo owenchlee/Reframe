@@ -14,13 +14,26 @@ const ME_VOICE = 'JBFqnCBsd6RMkjVDRZzb'; // George: the "me" voice in test-clip.
 const ENROLL_TEXT = 'Hi, this is me calibrating the coach. I am going to read a few sentences out loud. '
   + 'The weather has been great lately and I have been walking a lot.';
 const GAP_SECS = 1.5; // silence between calibration and the conversation
-// Known turns in test-clip.mp3 (seconds), from make-test-clip.js.
+// Known turns in test-clip.mp3 (seconds and script text), from make-test-clip.js.
 const TURNS = [
-  { who: 'me', start: 0.0, end: 2.23 },
-  { who: 'them', start: 3.43, end: 7.38 },
-  { who: 'me', start: 8.58, end: 10.76 },
-  { who: 'them', start: 11.96, end: 14.7 },
+  { who: 'me', start: 0.0, end: 2.23, text: "Hey, I like your jacket. Where'd you get it?" },
+  { who: 'them', start: 3.43, end: 7.38, text: 'Thanks, I got it at a thrift store downtown. I love finding old stuff.' },
+  { who: 'me', start: 8.58, end: 10.76, text: "Nice, what's the best thing you've found?" },
+  { who: 'them', start: 11.96, end: 14.7, text: 'Honestly, a vintage denim jacket for ten bucks.' },
 ];
+const norm = (t) => t.toLowerCase().replace(/[^a-z0-9' ]/g, ' ').split(/\s+/).filter(Boolean);
+TURNS.forEach((t) => { t.words = new Set(norm(t.text)); });
+// Match a final transcript to the script turn sharing the most words (robust to late arrivals).
+function turnOf(text) {
+  const ws = norm(text);
+  let best = -1;
+  let bestScore = 0;
+  TURNS.forEach((t, i) => {
+    const score = ws.filter((w) => t.words.has(w)).length / Math.max(1, ws.length);
+    if (score > bestScore) { best = i; bestScore = score; }
+  });
+  return bestScore >= 0.5 ? best : -1;
+}
 
 const args = process.argv.slice(2);
 const runs = Number(args.find((a) => /^\d+$/.test(a)) || 3);
@@ -61,16 +74,12 @@ async function enrollmentPcm() {
     });
     const cal = events.find((e) => e.msg && e.msg.type === 'calibrated');
     if (!cal || !cal.msg.ok) calibFails++;
-    // Assign each final transcript to a turn by arrival time: turn k owns [start_k, start_k+1 + 0.5s).
-    const finals = events.filter((e) => e.msg && e.msg.type === 'transcript' && e.msg.final && e.t / 1000 > offset);
+    // Assign each final transcript (after calibration) to a script turn by its words.
+    const calAt = cal ? cal.t : Infinity;
+    const finals = events.filter((e) => e.msg && e.msg.type === 'transcript' && e.msg.final && e.t > calAt);
     const perTurn = TURNS.map(() => ({ ok: 0, n: 0 }));
     for (const f of finals) {
-      const sec = f.t / 1000 - offset;
-      let k = -1;
-      TURNS.forEach((t, i) => {
-        const next = TURNS[i + 1] ? TURNS[i + 1].start + 0.5 : Infinity;
-        if (sec >= t.start && sec < next) k = i;
-      });
+      const k = turnOf(f.msg.text);
       if (k < 0) continue;
       const words = f.msg.text.split(/\s+/).filter(Boolean).length;
       perTurn[k].n += words;
