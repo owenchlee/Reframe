@@ -17,9 +17,10 @@ when they're not interested.
 
 ## Stack
 - `backend/`: Node + Express (CommonJS), `ws` (WebSocket), dotenv. Port 3001. (multer removed.)
-  Files: `server.js`, `scribe.js`, `signalEngine.js`, `suggest.js` (Groq), `tts.js`, `test-client.js`.
+  Files: `server.js`, `deepgram.js` (STT), `signalEngine.js`, `suggest.js` (Groq), `tts.js`,
+  `test-client.js`, `make-test-clip.js`, `test/` (engine tests: `npm run test:engine`).
 - `frontend/`: React (owned by the frontend dev; tooling TBD, document here once chosen).
-- Live transcription: ElevenLabs Scribe realtime speech-to-text.
+- Live transcription: Deepgram Nova-3 live streaming speech-to-text.
 - Suggestion LLM: Groq (OpenAI-compatible chat completions, fast small instruct model).
 - Voice out: ElevenLabs TTS, lowest-latency model, streamed mp3.
 - Browser audio: input is the **laptop mic** via `getUserMedia` (Bluetooth earbud mics drop
@@ -42,7 +43,7 @@ the measured latency on screen. Keep this section updated whenever a message sha
 
 ## Signal engine (backend module, plain JS, no LLM)
 - Per turn: speaker, word count, start/end time, whether it contained a question,
-  laughter tags (if Scribe provides them), response delay after the user's turn.
+  laughter tags (if the STT provides them), response delay after the user's turn.
 - Derived: `talkRatio`, the other person's average reply length over the last 3 turns, engagement state.
   - `cold`: 2+ consecutive short replies (under 5 words), no questions back, slow responses.
   - `engaged`: long replies, the other person asks questions or laughs.
@@ -62,7 +63,8 @@ suggestion, the latency number, and the exit line when the friend plays someone 
 - Backend dev edits only `backend/`. Frontend dev edits only `frontend/`.
 - Changes to this file or the WebSocket protocol need both devs to agree.
 - Never commit `.env` or `node_modules` (both are in `.gitignore`).
-- Secrets live in `backend/.env`. Variable names only: `ELEVENLABS_API_KEY`, `GROQ_API_KEY`.
+- Secrets live in `backend/.env`. Variable names only: `DEEPGRAM_API_KEY` (STT),
+  `ELEVENLABS_API_KEY` (TTS only), `GROQ_API_KEY` (suggestions).
 - Before pushing: `git pull --rebase origin main`. Small, frequent commits.
 
 ## How to run
@@ -71,14 +73,14 @@ suggestion, the latency number, and the exit line when the friend plays someone 
 - Frontend: TBD once set up.
 
 ## Status
-Backend items are written; only error paths are verified so far (no `backend/.env` yet).
-Run an end-to-end test with real keys before relying on them. `frontend/` is empty.
+Backend verified end to end with real keys on `test-clip.mp3` (2026-11-01): suggestion latency
+0.9s and 1.8s per turn. `frontend/` is empty.
 
 - [x] WebSocket server (`/live` on port 3001)
-- [x] Scribe realtime streaming (needs real-key test)
+- [x] Deepgram Nova-3 live streaming
 - [x] Signal engine
-- [x] Groq suggestions (needs real-key test)
-- [x] TTS streaming (needs real-key test)
+- [x] Groq suggestions
+- [x] TTS streaming
 - [x] Test client
 - [ ] Frontend mic capture (laptop mic, 16kHz PCM)
 - [ ] Frontend earbud playback (`setSinkId`)

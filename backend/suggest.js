@@ -1,11 +1,11 @@
 // Groq suggestion writer (OpenAI-compatible chat completions). The signal engine picks the
 // mode; this only writes the line. Never logs prompts or responses (they contain transcript text).
 
-// Fastest non-reasoning instruct model on Groq (560 tok/s); reasoning models like gpt-oss would
-// spend the tiny token budget thinking instead of answering.
-const GROQ_MODEL = 'llama-3.1-8b-instant';
+// Fastest usable model on this key (~400-600ms in testing) with reasoning turned off via REASONING_EFFORT.
+const GROQ_MODEL = 'qwen/qwen3.8-27b';
+const REASONING_EFFORT = 'none';
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const TIMEOUT_MS = 3000;
+const TIMEOUT_MS = 5000;
 const MAX_TOKENS = 40;
 const MAX_WORDS = 15;
 
@@ -43,6 +43,7 @@ async function writeSuggestion({ apiKey, turns, state, mode, signal }) {
           { role: 'user', content: `Conversation so far:\n${transcript}\n\nEngagement: ${state}\nMode: ${mode}\nYour one line:` },
         ],
         temperature: 0.4,
+        reasoning_effort: REASONING_EFFORT,
         max_tokens: MAX_TOKENS,
         stream: false,
       }),

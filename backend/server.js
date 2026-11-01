@@ -6,7 +6,7 @@ const http = require('http');
 const express = require('express');
 const cors = require('cors');
 const { WebSocketServer } = require('ws');
-const { ScribeStream, SAMPLE_RATE } = require('./scribe');
+const { DeepgramStream, SAMPLE_RATE } = require('./deepgram');
 const { SignalEngine } = require('./signalEngine');
 const { writeSuggestion } = require('./suggest');
 const { streamSpeech } = require('./tts');
@@ -16,8 +16,8 @@ const BYTES_PER_SEC = SAMPLE_RATE * 2; // 16-bit mono PCM
 const CONTEXT_TURNS = 6; // turns sent to Groq
 const WALL_LOG_SECS = 120; // how much audio-time -> wall-time mapping to keep (numbers only)
 
-const { ELEVENLABS_API_KEY, GROQ_API_KEY, ELEVENLABS_VOICE_ID } = process.env;
-for (const [name, val] of Object.entries({ ELEVENLABS_API_KEY, GROQ_API_KEY })) {
+const { DEEPGRAM_API_KEY, ELEVENLABS_API_KEY, GROQ_API_KEY, ELEVENLABS_VOICE_ID } = process.env;
+for (const [name, val] of Object.entries({ DEEPGRAM_API_KEY, ELEVENLABS_API_KEY, GROQ_API_KEY })) {
   if (!val) console.warn(`[reframe] ${name} is not set in backend/.env`);
 }
 
@@ -38,16 +38,17 @@ class LiveSession {
     this.wallLog = []; // [{ endSec, wall }] to convert audio time to wall-clock time
     this.inflight = null; // AbortController for the current suggestion + TTS
 
-    this.scribe = new ScribeStream(ELEVENLABS_API_KEY);
-    this.scribe.on('partial', (text) => this.send({ type: 'transcript', who: this.currentSpeaker(), text, final: false }));
-    this.scribe.on('committed', (text, words) => this.onCommitted(text, words));
-    this.scribe.on('upstreamError', (msg) => console.error(`[scribe] ${msg}`));
-    this.scribe.on('warning', (msg) => console.warn(`[scribe] ${msg}`));
-    this.scribe.on('error', (err) => {
-      console.error(`[scribe] connection error: ${err.message}`);
+    this.stt = new DeepgramStream(DEEPGRAM_API_KEY);
+    this.stt.on('partial', (text) => this.send({ type: 'transcript', who: this.currentSpeaker(), text, final: false }));
+    this.stt.on('committed', (text, words) => this.onCommitted(text, words));
+    this.stt.on('endOfTurn', () => this.onEndOfTurn());
+    this.stt.on('upstreamError', (msg) => console.error(`[deepgram] ${msg}`));
+    this.stt.on('warning', (msg) => console.warn(`[deepgram] ${msg}`));
+    this.stt.on('error', (err) => {
+      console.error(`[deepgram] connection error: ${err.message}`);
       this.client.close(1011, 'transcription unavailable');
     });
-    this.scribe.on('close', () => {
+    this.stt.on('close', () => {
       if (this.client.readyState === this.client.OPEN) this.client.close(1011, 'transcription ended');
     });
   }
@@ -95,7 +96,7 @@ class LiveSession {
     this.audioBytes += buf.length;
     this.wallLog.push({ endSec: this.audioSec, wall: Date.now() });
     while (this.wallLog.length && this.wallLog[0].endSec < this.audioSec - WALL_LOG_SECS) this.wallLog.shift();
-    this.scribe.write(buf);
+    this.stt.write(buf);
   }
 
   onControl(msg) {
@@ -105,13 +106,13 @@ class LiveSession {
     }
   }
 
-  // Split a committed Scribe segment by the push-to-talk timeline, then update the engine.
+  // Split a final STT segment by the push-to-talk timeline (word start time), then update the engine.
   onCommitted(text, words) {
     let segments;
     if (words && words.length) {
       segments = [];
       for (const w of words) {
-        const who = this.speakerAt((w.start + w.end) / 2);
+        const who = this.speakerAt(w.start);
         const last = segments[segments.length - 1];
         if (last && last.who === who) {
           last.text += ' ' + w.text.trim();
@@ -121,8 +122,8 @@ class LiveSession {
         }
       }
     } else {
-      // No word timings: attribute to whoever held the floor just before VAD's silence window.
-      const end = Math.max(0, this.audioSec - 0.6);
+      // No word timings: attribute to whoever holds the floor now.
+      const end = this.audioSec;
       segments = [{ who: this.speakerAt(end), text, start: end, end }];
     }
 
@@ -130,7 +131,12 @@ class LiveSession {
       this.send({ type: 'transcript', who: seg.who, text: seg.text, final: true });
       this.engine.addSegment(seg.who, seg.text, seg.start, seg.end);
     }
-    const last = segments[segments.length - 1];
+  }
+
+  // Deepgram end of utterance (speech_final or UtteranceEnd). Run the pipeline if the other
+  // person spoke last; latency is measured from the end of their last word.
+  onEndOfTurn() {
+    const last = this.engine.turns[this.engine.turns.length - 1];
     if (last && last.who === 'them') this.onTheirTurnEnd(last.end);
   }
 
@@ -180,12 +186,12 @@ class LiveSession {
     if (this.closed) return;
     this.closed = true;
     if (this.inflight) this.inflight.abort();
-    this.scribe.close();
+    this.stt.close();
   }
 }
 
 wss.on('connection', (client) => {
-  if (!ELEVENLABS_API_KEY || !GROQ_API_KEY) {
+  if (!DEEPGRAM_API_KEY || !ELEVENLABS_API_KEY || !GROQ_API_KEY) {
     client.close(1011, 'server missing API keys (see backend/.env)');
     return;
   }

@@ -12,7 +12,7 @@ const WebSocket = require('ws');
 
 const CHUNK_MS = 100;
 const BYTES_PER_MS = 32; // 16kHz * 2 bytes / 1000
-const TAIL_SILENCE_MS = 2000; // lets Scribe's VAD commit the final segment
+const TAIL_SILENCE_MS = 2000; // lets the STT endpointing close the final turn
 const WAIT_AFTER_MS = 8000; // time to wait for the last suggestion + TTS before exiting
 
 function parseArgs(argv) {
