@@ -104,9 +104,9 @@ module.exports = [
     expect: { state: 'neutral', talkRatio: 0.81, mode: 'ask', reasons: [] },
   },
 
-  // ---- Threshold review cases: these pin CURRENT behavior, which looks wrong (see summary) ----
+  // ---- Threshold review cases (fixed after review: fast brush-offs go cold, long-answer masking) ----
   {
-    name: 'review: fast short replies never go cold',
+    name: 'review: three fast short replies go cold',
     turns: [
       { who: 'me', text: 'Did you catch the game last night at all?', start: 0, end: 2.5 },
       { who: 'them', text: 'Nope.', start: 2.9, end: 3.2, derived: { words: 1, responseDelayMs: 400 } },
@@ -115,8 +115,12 @@ module.exports = [
       { who: 'me', text: 'Gotcha. Anything fun planned for the weekend?', start: 7.4, end: 9.5 },
       { who: 'them', text: 'Not sure.', start: 9.9, end: 10.4, derived: { words: 2, responseDelayMs: 400 } },
     ],
-    // me 9 + 8 + 7 = 24, them 1 + 2 + 2 = 5 -> 24 / 29
-    expect: { state: 'neutral', talkRatio: 0.83, mode: 'ask', reasons: ['short reply'] },
+    // me 9 + 8 + 7 = 24, them 1 + 2 + 2 = 5 -> 24 / 29. Fast replies, so the slow rule doesn't
+    // apply, but 3 short replies with no questions back is cold on its own.
+    expect: {
+      state: 'cold', talkRatio: 0.83, mode: 'exit',
+      reasons: ['3 short replies in a row', 'no questions back'],
+    },
   },
   {
     name: 'review: long early answer, then slow short replies (goes cold, works)',
@@ -141,7 +145,7 @@ module.exports = [
     },
   },
   {
-    name: 'review: ...but with fast short replies the long answer reads as "engaged"',
+    name: 'review: one long early answer no longer masks fast short replies',
     turns: [
       { who: 'me', text: 'How was the trip?', start: 0, end: 1.5 },
       {
@@ -155,9 +159,35 @@ module.exports = [
       { who: 'me', text: 'Fair enough. Any trips planned next?', start: 13, end: 15 },
       { who: 'them', text: 'No.', start: 15.4, end: 15.7 },
     ],
-    // Same shape, but fast replies so cold can't fire. avg of last 3 = (30 + 2 + 1) / 3 = 11 >= 10,
-    // so two one-word brush-offs in a row still read as "engaged: long replies".
+    // Same shape, fast replies. avg of last 3 = (30 + 2 + 1) / 3 = 11 >= 10, but the latest reply
+    // is 1 word, so "long replies" no longer applies. Only 2 short replies (fast), so not cold yet.
     // me 4 + 9 + 6 = 19, them 30 + 2 + 1 = 33 -> 19 / 52
-    expect: { state: 'engaged', talkRatio: 0.37, mode: 'reply', reasons: ['long replies'] },
+    expect: { state: 'neutral', talkRatio: 0.37, mode: 'reply', reasons: ['short reply'] },
   },
+  {
+    name: 'question detection: "Was fine." is not a question, so it can still go cold',
+    turns: [
+      { who: 'me', text: 'How was your weekend, anything fun going on?', start: 0, end: 2.5 },
+      { who: 'them', text: 'Was fine.', start: 5, end: 5.6, derived: { words: 2, hasQuestion: false, responseDelayMs: 2500 } },
+      { who: 'me', text: 'Nice, I went to a food market downtown.', start: 6, end: 8.5 },
+      { who: 'them', text: 'Did okay.', start: 11, end: 11.6, derived: { words: 2, hasQuestion: false, responseDelayMs: 2500 } },
+    ],
+    // me 8 + 8 = 16, them 2 + 2 = 4 -> 16 / 20
+    expect: {
+      state: 'cold', talkRatio: 0.8, mode: 'exit',
+      reasons: ['2 short replies in a row', 'no questions back', 'slow responses'],
+    },
+  },
+];
+
+// Direct checks for hasQuestion(): text -> expected.
+module.exports.questionCases = [
+  ['Was fine.', false],
+  ['Did okay.', false],
+  ['Have fun.', false],
+  ['Is what it is.', false],
+  ['Cool, how about you?', true],
+  ['That is great. Where was it?', true],
+  ['how was your day', true], // no punctuation: first-word fallback
+  ['sounds good', false],
 ];

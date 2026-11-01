@@ -1,11 +1,14 @@
 // Signal engine: plain-JS engagement scoring. No LLM, no I/O, no logging.
-// The engine decides the suggestion mode; Gemini only writes the line.
+// The engine decides the suggestion mode; the LLM only writes the line.
 
 // ---- Thresholds (tune these for the demo) ----
 // A reply from the other person under this many words counts as "short".
 const SHORT_REPLY_WORDS = 5;
 // This many consecutive short replies (with no questions and slow responses) => cold.
 const COLD_CONSECUTIVE_SHORT = 2;
+// This many consecutive short replies with no questions => cold even if the replies are fast
+// (quick one-word brush-offs).
+const COLD_FAST_CONSECUTIVE_SHORT = 3;
 // The other person's average words over the last REPLY_WINDOW turns at/above this => engaged.
 const ENGAGED_AVG_WORDS = 10;
 // Number of the other person's recent turns used for the average reply length.
@@ -24,9 +27,11 @@ function countWords(text) {
   return text.replace(LAUGHTER, ' ').split(/\s+/).filter((w) => /[a-z0-9]/i.test(w)).length;
 }
 
+// Scribe/Deepgram punctuate their output, so trust "?" when there is any punctuation. Only
+// unpunctuated text falls back to the first-word check ("how was your day").
 function hasQuestion(text) {
-  if (text.includes('?')) return true;
-  return text.split(/[.!]\s+/).some((s) => QUESTION_START.test(s.trim()));
+  if (/[?.!,;:]/.test(text)) return text.includes('?');
+  return QUESTION_START.test(text.trim());
 }
 
 class SignalEngine {
@@ -100,9 +105,15 @@ class SignalEngine {
       reasons.push(`${shortRun.length} short replies in a row`, 'no questions back', 'slow responses');
       return { state: 'cold', talkRatio, avgReplyLength: avg, reasons };
     }
+    if (shortRun.length >= COLD_FAST_CONSECUTIVE_SHORT && noQuestions) {
+      reasons.push(`${shortRun.length} short replies in a row`, 'no questions back');
+      return { state: 'cold', talkRatio, avgReplyLength: avg, reasons };
+    }
 
     const last = theirs[theirs.length - 1];
-    if (avg >= ENGAGED_AVG_WORDS) reasons.push('long replies');
+    // A long average only counts if the latest reply isn't itself short (one early long answer
+    // shouldn't mask brush-offs after it).
+    if (avg >= ENGAGED_AVG_WORDS && last && last.words >= SHORT_REPLY_WORDS) reasons.push('long replies');
     if (last && last.hasQuestion) reasons.push('asked a question');
     if (last && last.laughed) reasons.push('laughed');
     if (reasons.length > 0) return { state: 'engaged', talkRatio, avgReplyLength: avg, reasons };

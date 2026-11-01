@@ -29,5 +29,17 @@ for (const fx of fixtures) {
   }
 }
 
-console.log(`\n${fixtures.length - failed}/${fixtures.length} passed`);
+const { hasQuestion } = require('../signalEngine');
+for (const [text, want] of fixtures.questionCases) {
+  try {
+    assert.strictEqual(hasQuestion(text), want, `hasQuestion(${JSON.stringify(text)}): expected ${want}`);
+    console.log(`PASS  hasQuestion(${JSON.stringify(text)}) -> ${want}`);
+  } catch (err) {
+    failed++;
+    console.log(`FAIL  ${err.message}`);
+  }
+}
+
+const total = fixtures.length + fixtures.questionCases.length;
+console.log(`\n${total - failed}/${total} passed`);
 process.exit(failed ? 1 : 0);
