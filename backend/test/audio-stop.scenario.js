@@ -68,7 +68,7 @@ const stopsBetween = (events, fromSec, toSec) =>
     await run('A: them resumes mid-whisper -> audio_stop', async () => {
       // "me" turns shift by the inserted pause; the first one after their turn starts at 8.58 + PAUSE.
       const meStart = 8.58 + PAUSE;
-      const events = await runSession({ pcm: loadPcm(out), me: [[0, 2.23], [meStart, 10.76 + PAUSE]] });
+      const events = await runSession({ url: process.env.LIVE_URL, pcm: loadPcm(out), me: [[0, 2.23], [meStart, 10.76 + PAUSE]] });
       checkStops(events);
       // A stop caused by them resuming must come before the user presses the talk key.
       const early = stopsBetween(events, PAUSE_AT, meStart);
@@ -77,7 +77,7 @@ const stopsBetween = (events, fromSec, toSec) =>
     });
 
     await run('B: user presses talk key mid-whisper -> audio_stop', async () => {
-      const events = await runSession({ pcm: loadPcm(CLIP), me: [[0, 2.23], [8.58, 10.76]] });
+      const events = await runSession({ url: process.env.LIVE_URL, pcm: loadPcm(CLIP), me: [[0, 2.23], [8.58, 10.76]] });
       checkStops(events);
       const atKey = stopsBetween(events, 8.5, 9.5);
       assert.ok(atKey.length >= 1, 'expected an audio_stop right after the talk key at 8.58s, got none');

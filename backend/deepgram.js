@@ -3,7 +3,8 @@
 // JSON Results / UtteranceEnd out. Word start/end are seconds from the start of this stream.
 // Never logs audio or transcript text.
 //
-// Events: 'ready', 'partial'(text, words[{start,end}]), 'committed'(text, words[{text,start,end}]),
+// Events: 'ready', 'partial'(text, words[{start,end,speaker}]), 'committed'(text, words[{text,start,end,speaker}]),
+//         'flushed' (reply to finalize()),
 //         'endOfTurn'(lastWordEndSec), 'upstreamError'(msg), 'warning'(msg), 'error'(err), 'close'(code)
 const { EventEmitter } = require('events');
 const WebSocket = require('ws');
@@ -34,6 +35,9 @@ class DeepgramStream extends EventEmitter {
       smart_format: 'true',
       endpointing: String(ENDPOINTING_MS),
       utterance_end_ms: String(UTTERANCE_END_MS),
+      // Streaming diarization: each word gets an integer `speaker` (no confidence on streaming).
+      // Indexes stayed stable for the whole stream in testing (docs don't promise it).
+      diarize_model: 'latest',
     });
     this.pending = [];
     this.pendingBytes = 0;
@@ -85,11 +89,11 @@ class DeepgramStream extends EventEmitter {
       const alt = msg.channel?.alternatives?.[0];
       const text = alt?.transcript || '';
       if (!msg.is_final) {
-        if (text) this.emit('partial', text, (alt.words || []).map((w) => ({ start: w.start, end: w.end })));
+        if (text) this.emit('partial', text, (alt.words || []).map((w) => ({ start: w.start, end: w.end, speaker: w.speaker })));
         return;
       }
       if (text) {
-        const words = (alt.words || []).map((w) => ({ text: w.punctuated_word || w.word, start: w.start, end: w.end }));
+        const words = (alt.words || []).map((w) => ({ text: w.punctuated_word || w.word, start: w.start, end: w.end, speaker: w.speaker }));
         if (words.length) this.lastWordEnd = words[words.length - 1].end;
         this.turnOpen = true;
         this.emit('committed', text, words);
@@ -97,6 +101,7 @@ class DeepgramStream extends EventEmitter {
       // End of turn: Deepgram's endpointing fired (speech_final), or this final chunk already
       // contains >= TRAILING_SILENCE_END_MS of silence after the last word (endpointing sometimes misses
       // this; without it we'd wait ~1s for UtteranceEnd).
+      if (msg.from_finalize) this.emit('flushed');
       const trailingSilenceMs = (msg.start + msg.duration - this.lastWordEnd) * 1000;
       if (msg.speech_final || (this.turnOpen && trailingSilenceMs >= TRAILING_SILENCE_END_MS)) this._endTurn(this.lastWordEnd);
     } else if (msg.type === 'UtteranceEnd') {
@@ -117,6 +122,11 @@ class DeepgramStream extends EventEmitter {
       this.pending.push(buf);
       this.pendingBytes += buf.length;
     }
+  }
+
+  // Ask Deepgram to emit finals for all audio sent so far (used to end calibration promptly).
+  finalize() {
+    if (this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ type: 'Finalize' }));
   }
 
   close() {

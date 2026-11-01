@@ -7,7 +7,7 @@
 // --me          time ranges (seconds) where YOU are speaking (simulates holding space). Default: all "them".
 // --play        play each whispered suggestion through ffplay as it arrives.
 //
-// Also usable as a module (bench.js): runSession({ pcm, me, url, log }) resolves with every
+// Also usable as a module (bench.js): runSession({ pcm, me, controls, url, log }) resolves with every
 // event received, each stamped with ms since connect: [{ t, msg }] or [{ t, binary: bytes }].
 const fs = require('fs');
 const { spawn, spawnSync } = require('child_process');
@@ -46,7 +46,8 @@ function loadPcm(file) {
   return r.stdout;
 }
 
-function runSession({ pcm, me = [], url = 'ws://localhost:3001/live', play = false, log = () => {} }) {
+// controls: [{ at: seconds, msg }] JSON messages sent when the audio reaches `at` (e.g. calibrate).
+function runSession({ pcm, me = [], controls = [], url = 'ws://localhost:3001/live', play = false, log = () => {} }) {
   return new Promise((resolve, reject) => {
     const audioPcm = Buffer.concat([pcm, Buffer.alloc(TAIL_SILENCE_MS * BYTES_PER_MS)]);
     const chunkBytes = CHUNK_MS * BYTES_PER_MS;
@@ -63,10 +64,16 @@ function runSession({ pcm, me = [], url = 'ws://localhost:3001/live', play = fal
       log(`${stamp()} connected, streaming ${(audioPcm.length / (BYTES_PER_MS * 1000)).toFixed(1)}s of audio`);
       let offset = 0;
       let who = 'them';
+      const pending = [...controls].sort((a, b) => a.at - b.at);
       // Pace by elapsed time (not interval count) so audio time tracks wall time without drift.
       const tick = () => {
         while (offset < audioPcm.length && offset / BYTES_PER_MS <= now()) {
           const sec = offset / (BYTES_PER_MS * 1000);
+          while (pending.length && pending[0].at <= sec) {
+            const c = pending.shift();
+            ws.send(JSON.stringify(c.msg));
+            log(`${stamp()} >> ${JSON.stringify(c.msg)}`);
+          }
           const want = me.some(([a, b]) => sec >= a && sec < b) ? 'me' : 'them';
           if (want !== who) {
             who = want;

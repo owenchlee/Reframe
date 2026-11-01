@@ -8,17 +8,22 @@ const cors = require('cors');
 const { WebSocketServer } = require('ws');
 const { DeepgramStream, SAMPLE_RATE } = require('./deepgram');
 const { SignalEngine } = require('./signalEngine');
+const { SpeakerLabeler } = require('./speakerLabeler');
 const { writeSuggestion, warmGroq } = require('./suggest');
 const { streamSpeech, warmTts, MP3_BYTES_PER_SEC } = require('./tts');
 
-const PORT = 3001;
+const PORT = Number(process.env.PORT) || 3001; // PORT override is for running tests beside a dev server
 const BYTES_PER_SEC = SAMPLE_RATE * 2; // 16-bit mono PCM
 const CONTEXT_TURNS = 6; // turns sent to Groq
 const WARM_EVERY_MS = 1000; // check often; httpClient only warms a host after it has been idle ~4s
+// After calibrate stop, wait at most this long for Deepgram to flush the last calibration words.
+const CALIB_FLUSH_TIMEOUT_MS = 1500;
 const PLAYBACK_SLACK_MS = 300; // added to the estimated whisper length before it counts as finished
 const WALL_LOG_SECS = 120; // how much audio-time -> wall-time mapping to keep (numbers only)
 
-const { DEEPGRAM_API_KEY, ELEVENLABS_API_KEY, GROQ_API_KEY, ELEVENLABS_VOICE_ID } = process.env;
+const { DEEPGRAM_API_KEY, ELEVENLABS_API_KEY, GROQ_API_KEY, ELEVENLABS_VOICE_ID, PICOVOICE_ACCESS_KEY } = process.env;
+if (!PICOVOICE_ACCESS_KEY) console.log('[reframe] voiceprint is off (PICOVOICE_ACCESS_KEY not set); using diarization only');
+else console.log('[reframe] PICOVOICE_ACCESS_KEY is set, but voiceprint (Eagle) is not built yet; using diarization only');
 for (const [name, val] of Object.entries({ DEEPGRAM_API_KEY, ELEVENLABS_API_KEY, GROQ_API_KEY })) {
   if (!val) console.warn(`[reframe] ${name} is not set in backend/.env`);
 }
@@ -36,7 +41,7 @@ class LiveSession {
     this.engine = new SignalEngine();
     this.audioBytes = 0; // total PCM bytes received = position on the audio timeline
     this.carry = null; // odd trailing byte from a frame, kept to stay sample-aligned
-    this.speakers = [{ at: 0, who: 'them' }]; // speaker timeline (audio seconds)
+    this.labeler = new SpeakerLabeler(); // me/them: push-to-talk override, then calibrated diarization
     this.wallLog = []; // [{ endSec, wall }] to convert audio time to wall-clock time
     // The current suggestion: { ctrl, turnEnd, audioStarted, audioEnded, firstChunkAt, bytes, stopped }.
     // Kept after audio_end until its estimated playback end, so a stale whisper can still be stopped.
@@ -54,10 +59,10 @@ class LiveSession {
       // Judged by word timestamps, not arrival time, so a late interim of the user's own words
       // can't cancel a whisper.
       const cur = this.current;
-      if (cur && words.some((w) => w.start > cur.turnEnd && this.speakerAt(w.start) === 'them')) {
+      if (cur && words.some((w) => w.start > cur.turnEnd && !this.labeler.inCalibration(w.start) && this.labeler.rawWho(w) === 'them')) {
         this.cancelCurrent();
       }
-      this.send({ type: 'transcript', who: this.currentSpeaker(), text, final: false });
+      this.send({ type: 'transcript', who: this.labeler.labelPartial(words, this.audioSec), text, final: false });
     });
     this.stt.on('committed', (text, words) => this.onCommitted(text, words));
     this.stt.on('endOfTurn', () => this.onEndOfTurn());
@@ -74,19 +79,6 @@ class LiveSession {
 
   get audioSec() {
     return this.audioBytes / BYTES_PER_SEC;
-  }
-
-  currentSpeaker() {
-    return this.speakers[this.speakers.length - 1].who;
-  }
-
-  speakerAt(sec) {
-    let who = this.speakers[0].who;
-    for (const s of this.speakers) {
-      if (s.at <= sec) who = s.who;
-      else break;
-    }
-    return who;
   }
 
   wallAt(sec) {
@@ -119,21 +111,57 @@ class LiveSession {
   }
 
   onControl(msg) {
-    if (msg.type === 'speaker' && (msg.who === 'me' || msg.who === 'them') && msg.who !== this.currentSpeaker()) {
-      this.speakers.push({ at: this.audioSec, who: msg.who });
-      if (this.speakers.length > 500) this.speakers.splice(1, 1);
+    if (msg.type === 'speaker' && (msg.who === 'me' || msg.who === 'them')) {
       // The user started talking: stop any whisper and drop a suggestion still being written.
-      if (msg.who === 'me') this.cancelCurrent();
+      if (this.labeler.setPtt(msg.who, this.audioSec) && msg.who === 'me') this.cancelCurrent();
+    } else if (msg.type === 'calibrate' && msg.action === 'start') {
+      this.cancelCurrent();
+      this.labeler.startCalibration(this.audioSec);
+    } else if (msg.type === 'calibrate' && msg.action === 'stop') {
+      this.finishCalibration();
     }
   }
 
-  // Split a final STT segment by the push-to-talk timeline (word start time), then update the engine.
+  // Ends calibration once Deepgram has flushed the words up to now (or after a timeout).
+  finishCalibration() {
+    if (!this.labeler.calib || this.labeler.calib.stopSec !== null) {
+      if (!this.labeler.calib) this.send({ type: 'calibrated', ok: false, reason: 'calibration was not started' });
+      return;
+    }
+    this.labeler.stopCalibration(this.audioSec);
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      this.stt.off('flushed', finish);
+      const { ok, reason } = this.labeler.finishCalibration();
+      this.send(ok ? { type: 'calibrated', ok } : { type: 'calibrated', ok, reason });
+    };
+    const timer = setTimeout(finish, CALIB_FLUSH_TIMEOUT_MS);
+    this.stt.on('flushed', finish);
+    this.stt.finalize();
+  }
+
+  // Label a final STT segment word by word (push-to-talk override, then calibrated diarization,
+  // smoothed so a turn keeps one owner), then update the engine. Calibration speech is shown as
+  // "me" but never enters the conversation.
   onCommitted(text, words) {
+    if (words && words.length) {
+      const calibWords = words.filter((w) => this.labeler.inCalibration(w.start));
+      if (calibWords.length) {
+        this.labeler.addCalibrationWords(calibWords);
+        this.send({ type: 'transcript', who: 'me', text: calibWords.map((w) => w.text.trim()).join(' '), final: true });
+        words = words.filter((w) => !this.labeler.inCalibration(w.start));
+        if (!words.length) return;
+      }
+    }
     let segments;
     if (words && words.length) {
       segments = [];
-      for (const w of words) {
-        const who = this.speakerAt(w.start);
+      const labels = this.labeler.labelFinal(words);
+      for (const [i, w] of words.entries()) {
+        const who = labels[i];
         const last = segments[segments.length - 1];
         if (last && last.who === who) {
           last.text += ' ' + w.text.trim();
@@ -145,7 +173,7 @@ class LiveSession {
     } else {
       // No word timings: attribute to whoever holds the floor now.
       const end = this.audioSec;
-      segments = [{ who: this.speakerAt(end), text, start: end, end }];
+      segments = [{ who: this.labeler.pttAt(end) || (this.labeler.floor ? this.labeler.floor.who : 'them'), text, start: end, end }];
     }
 
     for (const seg of segments) {

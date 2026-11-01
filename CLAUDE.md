@@ -20,8 +20,11 @@ when they're not interested.
   Files: `server.js`, `deepgram.js` (STT), `signalEngine.js`, `suggest.js` (Groq), `tts.js`,
   `httpClient.js` (keep-alive pool), `test-client.js`, `make-test-clip.js`, `bench.js` (latency),
   `test/` (engine tests: `npm run test:engine`).
+  Also `speakerLabeler.js` (me/them labeling), `npm run test:labeler`, `npm run scenario:diarization`.
 - `frontend/`: React (owned by the frontend dev; tooling TBD, document here once chosen).
   On `audio_stop` the client must stop playback immediately and drop any queued mp3 chunks.
+  When the user presses Start, run a calibration step (`calibrate` start, user talks alone for
+  ~5-10s, `calibrate` stop, show the `calibrated` result). The space bar becomes an optional override.
 - Live transcription: Deepgram Nova-3 live streaming speech-to-text.
 - Suggestion LLM: Groq (OpenAI-compatible chat completions, fast small instruct model).
 - Voice out: ElevenLabs TTS, lowest-latency model, streamed mp3.
@@ -32,6 +35,8 @@ when they're not interested.
 Client → server:
 - Binary frames: 16kHz mono PCM audio.
 - `{type:"speaker", who:"me"|"them"}`: sent on talk-key press/release (hold space = `me`; default `them`).
+- `{type:"calibrate", action:"start"|"stop"}`: while calibrating the user talks alone; their voice's
+  diarization label becomes `me`. Speaker messages still override diarization while held.
 
 Server → client:
 - `{type:"transcript", who:"me"|"them", text, final}`
@@ -42,6 +47,8 @@ Server → client:
 - `{type:"audio_stop"}`: the whisper being played is stale (they resumed talking, or the user
   pressed the talk key). Stop playback now, discard its queued chunks. Terminal for that suggestion:
   no further audio_end/timing. May also arrive after audio_end while the whisper is still playing.
+- `{type:"calibrated", ok:boolean, reason?:string}`: reply to calibrate stop. `ok:false` if no/too little
+  speech or more than one voice. Uncalibrated sessions label everything `them` unless space is held.
 
 Latency target: end of the other person's turn → suggestion text ready in **under 1.5s**. The UI shows
 the measured latency on screen. Keep this section updated whenever a message shape changes.
@@ -59,6 +66,7 @@ the measured latency on screen. Keep this section updated whenever a message sha
 ## Parked (do not build yet)
 Story bank (user-typed facts for personalized lines), practice mode with simulated people,
 post-conversation debrief, speaker diarization (push-to-talk is used instead).
+Update 2026-11-01: diarization + calibration is now built (Stage A); push-to-talk stays as override.
 
 ## Demo plan
 Live or recorded roleplay with a friend. Show the engagement meter changing, the one-line
@@ -69,7 +77,8 @@ suggestion, the latency number, and the exit line when the friend plays someone 
 - Changes to this file or the WebSocket protocol need both devs to agree.
 - Never commit `.env` or `node_modules` (both are in `.gitignore`).
 - Secrets live in `backend/.env`. Variable names only: `DEEPGRAM_API_KEY` (STT),
-  `ELEVENLABS_API_KEY` (TTS only), `GROQ_API_KEY` (suggestions).
+  `ELEVENLABS_API_KEY` (TTS only), `GROQ_API_KEY` (suggestions), `PICOVOICE_ACCESS_KEY` (optional,
+  voiceprint; not set, so voiceprint is off).
 - Before pushing: `git pull --rebase origin main`. Small, frequent commits.
 
 ## How to run
@@ -89,6 +98,9 @@ latencyMs p50 965 / worst 1679, ttsMs p50 193 / worst 1146 (15 of 16 turns withi
 - [x] TTS streaming
 - [x] Test client
 - [x] Protocol change (2026-11-01): added `audio_stop` (server -> client); frontend must handle it
+- [x] Protocol change (2026-11-01): added `calibrate` (client -> server) and `calibrated` (server -> client)
+- [x] Speaker diarization + calibration (Stage A): 100% word labels on test-clip.mp3, 3 runs, no latency cost
+- [ ] Voiceprint (Stage B, Picovoice Eagle): not built, PICOVOICE_ACCESS_KEY not set
 - [ ] Frontend mic capture (laptop mic, 16kHz PCM)
 - [ ] Frontend earbud playback (`setSinkId`)
 - [ ] UI: engagement meter + latency number

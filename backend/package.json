@@ -6,7 +6,9 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "test:engine": "node test/engine.test.js",
-    "scenario:audio-stop": "node test/audio-stop.scenario.js"
+    "scenario:audio-stop": "node test/audio-stop.scenario.js",
+    "test:labeler": "node test/labeler.test.js",
+    "scenario:diarization": "node test/diarization.scenario.js"
   },
   "keywords": [],
   "author": "",
