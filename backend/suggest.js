@@ -1,8 +1,12 @@
-// Gemini suggestion writer. The signal engine picks the mode; this only writes the line.
-// Never logs prompts or responses (they contain transcript text).
+// Groq suggestion writer (OpenAI-compatible chat completions). The signal engine picks the
+// mode; this only writes the line. Never logs prompts or responses (they contain transcript text).
 
-// Fastest current Flash model per ai.google.dev/gemini-api/docs/models.
-const GEMINI_MODEL = 'gemini-3.5-flash-lite';
+// Fastest non-reasoning instruct model on Groq (560 tok/s); reasoning models like gpt-oss would
+// spend the tiny token budget thinking instead of answering.
+const GROQ_MODEL = 'llama-3.1-8b-instant';
+const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
+const TIMEOUT_MS = 3000;
+const MAX_TOKENS = 40;
 const MAX_WORDS = 15;
 
 const SYSTEM_PROMPT = `You are a discreet, kind conversation coach for a shy person ("Me").
@@ -25,28 +29,35 @@ function cleanLine(text) {
 
 async function writeSuggestion({ apiKey, turns, state, mode, signal }) {
   const transcript = turns.map((t) => `${t.who === 'me' ? 'Me' : 'Them'}: ${t.text}`).join('\n');
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
-    {
+  const timeout = AbortSignal.timeout(TIMEOUT_MS);
+  let res;
+  try {
+    res = await fetch(GROQ_URL, {
       method: 'POST',
-      signal,
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-        contents: [{
-          role: 'user',
-          parts: [{ text: `Conversation so far:\n${transcript}\n\nEngagement: ${state}\nMode: ${mode}\nYour one line:` }],
-        }],
-        generationConfig: { temperature: 0.7, maxOutputTokens: 256 },
+        model: GROQ_MODEL,
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: `Conversation so far:\n${transcript}\n\nEngagement: ${state}\nMode: ${mode}\nYour one line:` },
+        ],
+        temperature: 0.4,
+        max_tokens: MAX_TOKENS,
+        stream: false,
       }),
-    },
-  );
-  if (!res.ok) throw new Error(`Gemini HTTP ${res.status}`);
+    });
+  } catch (err) {
+    // Error messages here carry no request content; keep them generic anyway.
+    if (timeout.aborted) throw new Error(`Groq timeout after ${TIMEOUT_MS}ms`);
+    if (signal && signal.aborted) throw err;
+    throw new Error('Groq network error');
+  }
+  if (!res.ok) throw new Error(`Groq HTTP ${res.status}`);
   const data = await res.json();
-  const text = data.candidates?.[0]?.content?.parts?.filter((p) => !p.thought).map((p) => p.text || '').join('');
-  const line = cleanLine(text);
-  if (!line) throw new Error('Gemini returned no text');
+  const line = cleanLine(data.choices?.[0]?.message?.content);
+  if (!line) throw new Error('Groq returned no text');
   return line;
 }
 
-module.exports = { writeSuggestion, cleanLine, GEMINI_MODEL };
+module.exports = { writeSuggestion, cleanLine, GROQ_MODEL };

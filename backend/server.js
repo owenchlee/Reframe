@@ -13,11 +13,11 @@ const { streamSpeech } = require('./tts');
 
 const PORT = 3001;
 const BYTES_PER_SEC = SAMPLE_RATE * 2; // 16-bit mono PCM
-const CONTEXT_TURNS = 6; // turns sent to Gemini
+const CONTEXT_TURNS = 6; // turns sent to Groq
 const WALL_LOG_SECS = 120; // how much audio-time -> wall-time mapping to keep (numbers only)
 
-const { ELEVENLABS_API_KEY, GEMINI_API_KEY, ELEVENLABS_VOICE_ID } = process.env;
-for (const [name, val] of Object.entries({ ELEVENLABS_API_KEY, GEMINI_API_KEY })) {
+const { ELEVENLABS_API_KEY, GROQ_API_KEY, ELEVENLABS_VOICE_ID } = process.env;
+for (const [name, val] of Object.entries({ ELEVENLABS_API_KEY, GROQ_API_KEY })) {
   if (!val) console.warn(`[reframe] ${name} is not set in backend/.env`);
 }
 
@@ -148,10 +148,10 @@ class LiveSession {
     let text;
     try {
       text = await writeSuggestion({
-        apiKey: GEMINI_API_KEY, turns: this.engine.recentTurns(CONTEXT_TURNS), state, mode, signal: ctrl.signal,
+        apiKey: GROQ_API_KEY, turns: this.engine.recentTurns(CONTEXT_TURNS), state, mode, signal: ctrl.signal,
       });
     } catch (err) {
-      if (!ctrl.signal.aborted) console.error(`[gemini] ${err.message}`);
+      if (!ctrl.signal.aborted) console.error(`[groq] ${err.message}`);
       return;
     }
     if (ctrl.signal.aborted) return;
@@ -185,7 +185,7 @@ class LiveSession {
 }
 
 wss.on('connection', (client) => {
-  if (!ELEVENLABS_API_KEY || !GEMINI_API_KEY) {
+  if (!ELEVENLABS_API_KEY || !GROQ_API_KEY) {
     client.close(1011, 'server missing API keys (see backend/.env)');
     return;
   }

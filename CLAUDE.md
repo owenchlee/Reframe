@@ -17,10 +17,10 @@ when they're not interested.
 
 ## Stack
 - `backend/`: Node + Express (CommonJS), `ws` (WebSocket), dotenv. Port 3001. (multer removed.)
-  Files: `server.js`, `scribe.js`, `signalEngine.js`, `suggest.js` (Gemini), `tts.js`, `test-client.js`.
+  Files: `server.js`, `scribe.js`, `signalEngine.js`, `suggest.js` (Groq), `tts.js`, `test-client.js`.
 - `frontend/`: React (owned by the frontend dev; tooling TBD, document here once chosen).
 - Live transcription: ElevenLabs Scribe realtime speech-to-text.
-- Suggestion LLM: Google Gemini (a fast flash model).
+- Suggestion LLM: Groq (OpenAI-compatible chat completions, fast small instruct model).
 - Voice out: ElevenLabs TTS, lowest-latency model, streamed mp3.
 - Browser audio: input is the **laptop mic** via `getUserMedia` (Bluetooth earbud mics drop
   to call quality and add lag); output goes to the earbuds via `setSinkId` on the audio element.
@@ -48,7 +48,7 @@ the measured latency on screen. Keep this section updated whenever a message sha
   - `engaged`: long replies, the other person asks questions or laughs.
   - `neutral`: otherwise.
 - Thresholds live in constants at the top of the module.
-- The engine decides the mode (`ask` / `reply` / `exit`). Gemini only writes the line.
+- The engine decides the mode (`ask` / `reply` / `exit`). the LLM only writes the line.
 
 ## Parked (do not build yet)
 Story bank (user-typed facts for personalized lines), practice mode with simulated people,
@@ -62,7 +62,7 @@ suggestion, the latency number, and the exit line when the friend plays someone 
 - Backend dev edits only `backend/`. Frontend dev edits only `frontend/`.
 - Changes to this file or the WebSocket protocol need both devs to agree.
 - Never commit `.env` or `node_modules` (both are in `.gitignore`).
-- Secrets live in `backend/.env`. Variable names only: `ELEVENLABS_API_KEY`, `GEMINI_API_KEY`.
+- Secrets live in `backend/.env`. Variable names only: `ELEVENLABS_API_KEY`, `GROQ_API_KEY`.
 - Before pushing: `git pull --rebase origin main`. Small, frequent commits.
 
 ## How to run
@@ -77,7 +77,7 @@ Run an end-to-end test with real keys before relying on them. `frontend/` is emp
 - [x] WebSocket server (`/live` on port 3001)
 - [x] Scribe realtime streaming (needs real-key test)
 - [x] Signal engine
-- [x] Gemini suggestions (needs real-key test)
+- [x] Groq suggestions (needs real-key test)
 - [x] TTS streaming (needs real-key test)
 - [x] Test client
 - [ ] Frontend mic capture (laptop mic, 16kHz PCM)
